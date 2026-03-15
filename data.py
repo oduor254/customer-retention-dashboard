@@ -16,6 +16,7 @@ app = Flask(__name__)
 
 # Configuration
 JSON_FILE_PATH = r'C:\Users\Oduor\Downloads\JSON Files\retention-484110-9e4520124486.json'
+GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
 SHEET_NAME = 'Customer Database'
 WORKSHEET_NAME = 'Shops'
 
@@ -107,7 +108,15 @@ def get_customer_data():
         SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 
                   'https://www.googleapis.com/auth/drive']
         
-        creds = Credentials.from_service_account_file(JSON_FILE_PATH, scopes=SCOPES)
+        if os.path.exists(JSON_FILE_PATH):
+            # Local development
+            creds = Credentials.from_service_account_file(JSON_FILE_PATH, scopes=SCOPES)
+        elif GOOGLE_SERVICE_ACCOUNT_JSON:
+            # Render / cloud deployment
+            creds_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+            creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
+        else:
+            raise ValueError("No Google credentials found.")
         
         # Create an authorized session from google-auth
         from google.auth.transport.requests import AuthorizedSession
@@ -1984,7 +1993,15 @@ def upload_data():
         SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 
                   'https://www.googleapis.com/auth/drive']
         
-        creds = Credentials.from_service_account_file(JSON_FILE_PATH, scopes=SCOPES)
+        if os.path.exists(JSON_FILE_PATH):
+            # Local development
+            creds = Credentials.from_service_account_file(JSON_FILE_PATH, scopes=SCOPES)
+        elif GOOGLE_SERVICE_ACCOUNT_JSON:
+            # Render / cloud deployment
+            creds_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+            creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
+        else:
+            raise ValueError("No Google credentials found.")
         client = gspread.authorize(creds)
         
         # Open the spreadsheet and worksheet
