@@ -1,0 +1,2455 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Customer Retention Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f5f7fa;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 10px;
+            color: #2c3e50;
+            font-size: 32px;
+        }
+
+        .last-updated {
+            text-align: center;
+            color: #7f8c8d;
+            font-size: 13px;
+            margin-bottom: 30px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 60px 20px;
+            font-size: 18px;
+            color: #666;
+        }
+
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(255, 255, 255, 0.9);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            font-size: 18px;
+            color: #2c3e50;
+        }
+
+        .loading-overlay.hidden {
+            display: none;
+        }
+
+        /* Overview Metrics Grid */
+        .overview-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .overview-card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            border-left: 4px solid #3498db;
+        }
+
+        .overview-card.retention {
+            border-left-color: #2ecc71;
+        }
+
+        .overview-card.repeat {
+            border-left-color: #e74c3c;
+        }
+
+        .overview-card.revenue {
+            border-left-color: #f39c12;
+        }
+
+        .metric-label {
+            color: #7f8c8d;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .metric-value {
+            font-size: 28px;
+            font-weight: bold;
+            color: #2c3e50;
+            line-height: 1.2;
+        }
+
+        .metric-subtext {
+            font-size: 13px;
+            color: #95a5a6;
+            margin-top: 5px;
+        }
+
+        /* Charts Section */
+        .charts-section {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .chart-card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .chart-card h3 {
+            color: #2c3e50;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+
+        /* Tables Section */
+        .tables-section {
+            margin-bottom: 30px;
+        }
+
+        .tables-section h2 {
+            color: #2c3e50;
+            margin-bottom: 15px;
+            font-size: 22px;
+            border-bottom: 2px solid #ecf0f1;
+            padding-bottom: 10px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            margin-bottom: 30px;
+        }
+
+        th {
+            background-color: #34495e;
+            color: white;
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #ecf0f1;
+            color: #555;
+        }
+
+        tbody tr:hover {
+            background-color: #f8f9fa;
+        }
+
+        tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .status-badge.success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+
+        .status-badge.warning {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+
+        .refresh-btn {
+            display: block;
+            margin: 30px auto;
+            padding: 12px 30px;
+            background-color: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: background-color 0.3s;
+        }
+
+        .refresh-btn:hover {
+            background-color: #2980b9;
+        }
+
+        .action-bar {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            flex-wrap: wrap;
+            background: white;
+            border-radius: 8px;
+            padding: 16px 20px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+            margin-bottom: 28px;
+            border-left: 4px solid #27ae60;
+        }
+
+        .action-bar .bar-label {
+            font-size: 14px;
+            font-weight: 600;
+            color: #555;
+            flex: 1;
+        }
+
+        .export-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 22px;
+            background: linear-gradient(135deg, #27ae60, #2ecc71);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+            text-decoration: none;
+            transition: opacity 0.2s, transform 0.1s;
+            box-shadow: 0 2px 6px rgba(39, 174, 96, 0.35);
+        }
+
+        .export-btn:hover {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+
+        .export-btn:active {
+            transform: translateY(0);
+        }
+
+        .export-btn.one-time {
+            background: linear-gradient(135deg, #e67e22, #f39c12);
+            box-shadow: 0 2px 6px rgba(230, 126, 34, 0.35);
+        }
+
+        .upload-section {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            margin-bottom: 30px;
+            border-left: 4px solid #2ecc71;
+        }
+
+        .upload-section h3 {
+            color: #2c3e50;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+
+        .upload-form {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .upload-form input[type="file"] {
+            flex: 1;
+            min-width: 200px;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+
+        .upload-btn {
+            padding: 10px 20px;
+            background-color: #2ecc71;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: background-color 0.3s;
+        }
+
+        .upload-btn:hover {
+            background-color: #27ae60;
+        }
+
+        .upload-btn:disabled {
+            background-color: #95a5a6;
+            cursor: not-allowed;
+        }
+
+        .upload-status {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
+            display: none;
+        }
+
+        .upload-status.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .upload-status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            border: 1px solid #f5c6cb;
+        }
+
+        #content {
+            animation: fadeIn 0.3s ease-in;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="loading-overlay" id="loadingOverlay">
+        <div>
+            <div style="font-size: 24px; margin-bottom: 10px;">🔄</div>
+            <div>Loading dashboard data...</div>
+        </div>
+    </div>
+    <div class="container">
+        <h1>📊 Customer Retention Dashboard</h1>
+        <div class="last-updated" id="lastUpdated"></div>
+        <div class="last-updated" id="dateRange" style="font-weight: bold; color: #34495e;"></div>
+        <div class="shop-selector"
+            style="text-align: center; margin-bottom: 20px; display: flex; justify-content: center; gap: 30px; align-items: center; flex-wrap: wrap; background: #fff; padding: 20px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08);">
+            <div style="display: flex; align-items: center;">
+                <label for="shopSelect" style="font-weight: 700; margin-right: 12px; color: #34495e;">🏢 Shop:</label>
+                <select id="shopSelect"
+                    style="padding: 10px 15px; border-radius: 6px; border: 1.5px solid #dce1e7; background: #f8fafc; cursor: pointer; font-weight: 600; min-width: 180px;"
+                    onchange="updateDashboard()">
+                    <option value="all">All Shops (Combined)</option>
+                </select>
+            </div>
+            <div style="border-left: 2px solid #edf2f7; padding-left: 30px; display: flex; align-items: center;">
+                <label for="periodSelect" style="font-weight: 700; margin-right: 12px; color: #34495e;">📅 Time
+                    Period:</label>
+                <select id="periodSelect"
+                    style="padding: 10px 15px; border-radius: 6px; border: 1.5px solid #dce1e7; background: #f8fafc; cursor: pointer; font-weight: 600; min-width: 220px;"
+                    onchange="handleTimeFilterChange()">
+                    <option value="all">Overall Stats (Full History)</option>
+                    <!-- Periods populated dynamically -->
+                </select>
+            </div>
+            <button onclick="resetFilters()"
+                style="padding: 10px 20px; border-radius: 6px; border: none; background: #edf2f7; color: #4a5568; cursor: pointer; font-weight: 700; transition: all 0.2s;">
+                🔄 Reset Filters
+            </button>
+        </div>
+
+        <div id="loading" class="loading">⏳ Loading data...</div>
+        <div id="error"></div>
+        <div id="content" style="display: none;">
+
+            <!-- General Overview Metrics -->
+            <div class="overview-grid">
+                <div class="overview-card">
+                    <div class="metric-label">Units Sold</div>
+                    <div class="metric-value" id="totalPurchases">-</div>
+                    <div class="metric-subtext" id="totalVisitsSub">-</div>
+                </div>
+                <div class="overview-card">
+                    <div class="metric-label">Unique Customers</div>
+                    <div class="metric-value" id="uniqueCustomers">-</div>
+                    <div class="metric-subtext" id="customerBreakdown">-</div>
+                </div>
+                <div class="overview-card revenue">
+                    <div class="metric-label">Total Revenue</div>
+                    <div class="metric-value" id="totalRevenue">-</div>
+                    <div class="metric-subtext" id="avgSpendPerVisitSub">-</div>
+                </div>
+                <div class="overview-card">
+                    <div class="metric-label">Avg Spend Per Visit</div>
+                    <div class="metric-value" id="avgSpendPerVisit">-</div>
+                    <div class="metric-subtext">Per transaction</div>
+                </div>
+                <div class="overview-card">
+                    <div class="metric-label">Avg Spend Per Customer</div>
+                    <div class="metric-value" id="avgSpendPerCustomer">-</div>
+                    <div class="metric-subtext">Lifetime value</div>
+                </div>
+                <div class="overview-card repeat">
+                    <div class="metric-label">Repeat Customers</div>
+                    <div class="metric-value" id="repeatCustomers">-</div>
+                    <div class="metric-subtext" id="repeatPctSub">-</div>
+                </div>
+                <div class="overview-card">
+                    <div class="metric-label">Avg Lifespan</div>
+                    <div class="metric-value" id="avgLifespan">-</div>
+                    <div class="metric-subtext">Days</div>
+                </div>
+                <div class="overview-card">
+                    <div class="metric-label">Avg Purchase Cycle</div>
+                    <div class="metric-value" id="avgCycle">-</div>
+                    <div class="metric-subtext">Days</div>
+                </div>
+                <!-- NEW: CAC Card -->
+                <div class="overview-card" style="border-left-color: #9b59b6;">
+                    <div class="metric-label">Acquisition Cost (CAC)</div>
+                    <div class="metric-value" id="cacValue">-</div>
+                    <div class="metric-subtext" id="marketingSpendSub">Marketing spend / New customers</div>
+                </div>
+            </div>
+
+            <!-- ACTION BAR: Export / Quick Actions -->
+            <div class="action-bar" id="exportActionBar">
+                <span class="bar-label" id="exportBarLabel">📋 Retained (Repeat) Customers — ready to export for your
+                    call centre team</span>
+                <a id="exportRepeatBtn" href="/api/export/repeat-customers" class="export-btn">
+                    ⬇️ Export Loyal Customers (CSV)
+                </a>
+                <a id="exportOneTimeBtn" href="/api/export/one-time-customers" class="export-btn one-time">
+                    ⬇️ Export One-Time Customers (CSV)
+                </a>
+            </div>
+
+            <!-- Growth Rates Section was here, moved to end -->
+
+            <!-- TWO APPROACHES REPEAT ANALYSIS SECTION -->
+            <div class="tables-section">
+                <h2>🔄 Repeat Customer Analysis (Two Approaches)</h2>
+                <div class="overview-grid">
+                    <div class="overview-card" style="border-left-color: #9b59b6;">
+                        <div class="metric-label">Visit-Based Repeat</div>
+                        <div class="metric-value" id="repeatCountVisit">-</div>
+                        <div class="metric-subtext" id="repeatPctVisit">-</div>
+                    </div>
+                    <div class="overview-card" style="border-left-color: #34495e;">
+                        <div class="metric-label">Transaction-Based Repeat</div>
+                        <div class="metric-value" id="repeatCountTrx">-</div>
+                        <div class="metric-subtext" id="repeatPctTrx">-</div>
+                    </div>
+                </div>
+                <p style="font-size: 13px; color: #7f8c8d; margin-top: -15px; margin-bottom: 25px;">
+                    * <strong>Visit-Based:</strong> Customers who visited on more than one unique calendar day.<br>
+                    * <strong>Transaction-Based:</strong> Customers who have more than one total transaction record.
+                </p>
+            </div>
+
+            <!-- Inactive Customers (Win-Back Tool) -->
+            <div class="tables-section">
+                <h2>👋 Inactive Customers (Win-Back Tool)</h2>
+                <div class="overview-grid" style="grid-template-columns: 1fr; gap: 10px; margin-bottom: 20px;">
+                    <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap; background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <label style="font-weight: bold; color: #2c3e50;">Inactivity Period:</label>
+                            <select id="inactivitySelect" onchange="toggleInactivityMode()" style="padding: 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer; min-width: 200px;">
+                                <option value="threshold">By Inactivity Period (Days)</option>
+                                <option value="cohort" selected>By Last Purchase Month</option>
+                            </select>
+                        </div>
+                        
+                        <!-- Threshold Mode -->
+                        <div id="thresholdMode" style="display: none; align-items: center; gap: 10px;">
+                            <label style="font-weight: bold; color: #2c3e50;">Days Gone:</label>
+                            <select id="inactivityDays" onchange="loadInactiveCustomers()" style="padding: 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer;">
+                                <option value="30">30 Days</option>
+                                <option value="60">60 Days</option>
+                                <option value="90">90 Days</option>
+                                <option value="180">180 Days</option>
+                                <option value="365">1 Year</option>
+                            </select>
+                        </div>
+
+                        <!-- Cohort Mode -->
+                        <div id="cohortMode" style="display: flex; align-items: center; gap: 10px;">
+                            <label style="font-weight: bold; color: #2c3e50;">Last Purchase Month:</label>
+                            <select id="cohortMonth" onchange="loadInactiveCustomers()" style="padding: 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer;">
+                                <option value="1">January</option>
+                                <option value="2">February</option>
+                                <option value="3">March</option>
+                                <option value="4">April</option>
+                                <option value="5">May</option>
+                                <option value="6" selected>June</option>
+                                <option value="7">July</option>
+                                <option value="8">August</option>
+                                <option value="9">September</option>
+                                <option value="10">October</option>
+                                <option value="11">November</option>
+                                <option value="12">December</option>
+                            </select>
+                            <select id="cohortYear" onchange="loadInactiveCustomers()" style="padding: 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer;">
+                                <option value="2025">2025</option>
+                                <option value="2026" selected>2026</option>
+                            </select>
+                        </div>
+                        <div style="color: #64748b; font-size: 0.9em;">
+                            <span id="inactiveCountLabel">Looking for customers to bring back...</span>
+                        </div>
+                        <a id="exportInactiveBtn" href="/api/export/inactive-customers?days=30" class="export-btn" style="background-color: #e67e22; margin-left: auto; margin-right: 0;">
+                            ⬇️ Export Inactive List for Calls/SMS
+                        </a>
+                    </div>
+                </div>
+                <div style="max-height: 400px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 8px;">
+                    <table id="inactiveCustomersTable">
+                        <thead style="position: sticky; top: 0; z-index: 10;">
+                            <tr>
+                                <th>Name</th>
+                                <th>Phone</th>
+                                <th>Last Shop</th>
+                                <th>Last Visit</th>
+                                <th>Inactivity</th>
+                                <th>Total Spend</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Shop Loyalty & Impact Analysis Section -->
+            <div id="shopImpactSection" style="display: none;">
+                <div class="tables-section">
+                    <h2 id="impactTitle">🏢 Shop Impact Analysis</h2>
+                    <p id="impactDescription" style="color: #7f8c8d; margin-bottom: 20px;">
+                        Analysis of customer origins and cross-shopping behavior.
+                    </p>
+
+                    <div class="overview-grid" style="margin-bottom: 20px;">
+                        <div class="overview-card">
+                            <div class="metric-label">Total Shop Customers</div>
+                            <div class="metric-value" id="impactTotalCustomers">-</div>
+                            <div class="metric-subtext">Unique customers</div>
+                        </div>
+                        <div class="overview-card" style="border-left-color: #2ecc71;">
+                            <div class="metric-label">Target-Only Customers</div>
+                            <div class="metric-value" id="impactNewCustomers">-</div>
+                            <div class="metric-subtext" id="impactNewPct">-</div>
+                        </div>
+                        <div class="overview-card" style="border-left-color: #e74c3c;">
+                            <div class="metric-label">Cross-Shop Customers</div>
+                            <div class="metric-value" id="impactExistingCustomers">-</div>
+                            <div class="metric-subtext" id="impactExistingPct">-</div>
+                        </div>
+                        <div class="overview-card revenue">
+                            <div class="metric-label">Revenue (Target-Only)</div>
+                            <div class="metric-value" id="impactRevenueNew">-</div>
+                        </div>
+                        <div class="overview-card revenue">
+                            <div class="metric-label">Revenue (Cross-Shop)</div>
+                            <div class="metric-value" id="impactRevenueExisting">-</div>
+                        </div>
+                    </div>
+
+                    <div class="charts-section">
+                        <div class="chart-card">
+                            <h3>Source Shops Breakdown</h3>
+                            <div class="chart-container">
+                                <canvas id="impactSourceShopsChart"></canvas>
+                            </div>
+                        </div>
+                        <div class="chart-card">
+                            <h3>Source Regions Breakdown</h3>
+                            <div class="chart-container">
+                                <canvas id="impactSourceRegionsChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                        <div>
+                            <h3 style="margin-top: 20px; color: #2c3e50;">📊 Top Source Shops</h3>
+                            <table id="impactSourceShopsTable">
+                                <thead>
+                                    <tr>
+                                        <th>Shop</th>
+                                        <th>Customers</th>
+                                        <th>%</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                        <div>
+                            <h3 style="margin-top: 20px; color: #2c3e50;">🌍 Top Source Regions</h3>
+                            <table id="impactSourceRegionsTable">
+                                <thead>
+                                    <tr>
+                                        <th>Region</th>
+                                        <th>Customers</th>
+                                        <th>%</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- NEW: Monthly Loyalty Trends Table -->
+                    <div id="loyaltyTrendSection" style="margin-top: 30px;">
+                        <h3 style="color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px;">📉 Monthly
+                            Loyalty Evolution (Target-Only vs Cross-Shop)</h3>
+                        <table id="loyaltyTrendsTable">
+                            <thead>
+                                <tr style="background-color: #f8f9fa;">
+                                    <th>Month</th>
+                                    <th>Total Customers</th>
+                                    <th style="color: #2ecc71;">Target-Only</th>
+                                    <th style="color: #2ecc71;">% Target-Only</th>
+                                    <th style="color: #e74c3c;">Cross-Shop</th>
+                                    <th style="color: #e74c3c;">% Cross-Shop</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Charts Section -->
+            <div class="charts-section">
+                <div class="chart-card">
+                    <h3>Monthly Retention Trend</h3>
+                    <div class="chart-container">
+                        <canvas id="retentionChart"></canvas>
+                    </div>
+                </div>
+                <!-- NEW: Cumulative Retention Chart -->
+                <div class="chart-card">
+                    <h3>Retention from Start Date (April 2025)</h3>
+                    <div class="chart-container">
+                        <canvas id="cumulativeRetentionChart"></canvas>
+                    </div>
+                </div>
+                <div class="chart-card">
+                    <h3>Monthly Repeat Rate</h3>
+                    <div class="chart-container">
+                        <canvas id="repeatChart"></canvas>
+                    </div>
+                </div>
+                <div class="chart-card">
+                    <h3>Customer Distribution</h3>
+                    <div class="chart-container">
+                        <canvas id="distributionChart"></canvas>
+                    </div>
+                </div>
+                <div class="chart-card">
+                    <h3>Quarterly Performance</h3>
+                    <div class="chart-container">
+                        <canvas id="quarterlyChart"></canvas>
+                    </div>
+                </div>
+                <!-- NEW: Visit Interval Distribution Card -->
+                <div class="chart-card">
+                    <h3>Visit Interval Distribution</h3>
+                    <div class="chart-container">
+                        <canvas id="intervalChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tables-section">
+                <h2>📅 Retention and Repeat Period for the Entire Dataset (April 2025 - Present)</h2>
+                <table id="cumulativeRetentionTable">
+                    <thead>
+                        <tr>
+                            <th>Month</th>
+                            <th>Monthly Customers</th>
+                            <th>Retained (from Prev)</th>
+                            <th>Retention %</th>
+                            <th>New Customers</th>
+                            <th>New %</th>
+                            <th>Total Revenue</th>
+                            <th>Cumulative Repeat Count</th>
+                            <th>Cumulative Repeat %</th>
+                            <th>Cumulative Unique Total</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <!-- Monthly Data Table -->
+            <div class="tables-section">
+                <h2>📅 Monthly Performance</h2>
+                <table id="monthlyTable">
+                    <thead>
+                        <tr>
+                            <th>Month</th>
+                            <th>Total</th>
+                            <th>New</th>
+                            <th>New %</th>
+                            <th>Retained</th>
+                            <th>Ret. %</th>
+                            <th>Repeat</th>
+                            <th>Rep. %</th>
+                            <th>Rep. Growth</th>
+                            <th>Avg Spend</th>
+                            <th>Spend Growth</th>
+                            <th>Avg Life</th>
+                            <th>Life Growth</th>
+                            <th style="background-color: #9b59b6; color: white;">CAC (Ksh)</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <!-- Monthly Comparative Analysis (Current vs Prev) -->
+            <div class="tables-section" id="comparativeSection">
+                <h2>🔄 Monthly Comparative Analysis (MoM)</h2>
+                <table id="comparativeTable">
+                    <thead>
+                        <tr>
+                            <th>Month</th>
+                            <th>Repeat Customers</th>
+                            <th>% Change</th>
+                            <th>Avg Spend / Customer</th>
+                            <th>% Change</th>
+                            <th>Avg Lifespan (Days)</th>
+                            <th>% Change</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <div class="tables-section">
+                <h2>📊 Quarterly Performance</h2>
+                <table id="quarterlyTable">
+                    <thead>
+                        <tr>
+                            <th>Quarter</th>
+                            <th>Repeat Customers</th>
+                            <th>Avg Spend / Customer</th>
+                            <th>Avg Lifespan (Days)</th>
+                            <th>% Change</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <div class="tables-section">
+                <h2>📊 Semi-Annual Performance</h2>
+                <table id="semiAnnualTable">
+                    <thead>
+                        <tr>
+                            <th>Period</th>
+                            <th>Repeat Customers</th>
+                            <th>Avg Spend / Customer</th>
+                            <th>Avg Lifespan (Days)</th>
+                            <th>% Change</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <!-- Regional Performance -->
+            <div class="charts-section">
+                <div class="chart-card">
+                    <h3>Regional Revenue Performance</h3>
+                    <div class="chart-container">
+                        <canvas id="regionalRevenueChart"></canvas>
+                    </div>
+                </div>
+                <div class="chart-card">
+                    <h3>Regional Repeat Rate Comparison</h3>
+                    <div class="chart-container">
+                        <canvas id="regionalRepeatChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Top Shops by Region -->
+            <div class="tables-section">
+                <h2>🏪 Top 5 Shops by Revenue per Region</h2>
+                <div id="topShopsByRegion"></div>
+            </div>
+
+            <!-- Monthly Performance Per Shop -->
+            <div class="tables-section">
+                <h2>📅 Monthly Performance Per Shop (2025 - Present)</h2>
+                <div id="monthlyShopPerformance"></div>
+            </div>
+
+            <!-- Regional Data Table -->
+            <div class="tables-section">
+                <h2>🌍 Regional Performance (2025 - Present)</h2>
+                <table id="regionalTable">
+                    <thead>
+                        <tr>
+                            <th>Region</th>
+                            <th>Shops</th>
+                            <th>Total Customers</th>
+                            <th>Repeat Customers</th>
+                            <th>Repeat %</th>
+                            <th>Total Revenue</th>
+                            <th>Repeat Revenue %</th>
+                            <th>Avg Spend/Customer</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <!-- Gender Performance -->
+            <div class="tables-section">
+                <h2>👥 Gender Performance Analysis</h2>
+                <table id="genderTable">
+                    <thead>
+                        <tr>
+                            <th>Gender</th>
+                            <th>Total Customers</th>
+                            <th>Total Transactions</th>
+                            <th>Total Revenue</th>
+                            <th>Avg Spend/Customer</th>
+                            <th>Avg Transactions/Customer</th>
+                            <th>Repeat Customers</th>
+                            <th>Repeat %</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <!-- Product Performance -->
+            <div class="tables-section">
+                <h2>📦 Top 10 Products by Revenue</h2>
+                <table id="productTable">
+                    <thead>
+                        <tr>
+                            <th>Product</th>
+                            <th>Total Revenue</th>
+                            <th>Sales</th>
+                            <th>Avg Sold Price</th>
+                            <th>Original Price</th>
+                            <th>Discount Impact</th>
+                            <th>Unique Customers</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <!-- Advanced Product Analysis -->
+            <div class="tables-section">
+                <h2>🎁 Combo Performance & Product Affinity</h2>
+                <div class="overview-grid">
+                    <div style="flex: 1;">
+                        <h3>Top Existing Combos (+)</h3>
+                        <table id="comboTable">
+                            <thead>
+                                <tr>
+                                    <th>Combo Name</th>
+                                    <th>Revenue</th>
+                                    <th>Sales</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                    <div style="flex: 1;">
+                        <h3>Suggested Combos (Bought Together)</h3>
+                        <table id="affinityTable">
+                            <thead>
+                                <tr>
+                                    <th>Items</th>
+                                    <th>Type</th>
+                                    <th>Frequency</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Regional Top Products -->
+            <div class="tables-section">
+                <h2>🌍 Top 5 Products by Region</h2>
+                <div id="regionalProductsContainer"
+                    style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px;">
+                </div>
+
+            </div>
+
+            <!-- Monthly Shop Overview Section (Customers & Units Sold) -->
+            <div class="tables-section" id="monthlyOverviewSection">
+                <h2>📊 Monthly Customer Overview</h2>
+                <div style="overflow-x: auto;">
+                    <table id="monthlyCustomerOverviewTable">
+                        <thead>
+                            <tr>
+                                <th>Shop</th>
+                                <!-- Month columns will be added dynamically -->
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <h2 style="margin-top: 40px;">📦 Monthly Units Sold Overview</h2>
+                <div style="overflow-x: auto;">
+                    <table id="monthlyUnitsOverviewTable">
+                        <thead>
+                            <tr>
+                                <th>Shop</th>
+                                <!-- Month columns will be added dynamically -->
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <h2 style="margin-top: 40px;">🎁 Monthly Product Overview (Top 20)</h2>
+                <div style="overflow-x: auto;">
+                    <table id="monthlyProductsOverviewTable">
+                        <thead>
+                            <tr>
+                                <th>Product</th>
+                                <!-- Month columns will be added dynamically -->
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Customer Growth Rates Sections -->
+            <div class="tables-section" id="growthRatesSection" style="margin-top: 40px;">
+                <h2>📈 Monthly Customer Growth</h2>
+                <div style="overflow-x: auto;">
+                    <table id="monthlyGrowthTable">
+                        <thead>
+                            <tr>
+                                <th>Month</th>
+                                <th>Customers</th>
+                                <th>Previous Month</th>
+                                <th>Growth Rate %</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <h2 style="margin-top: 40px;">📊 Quarterly Customer Growth</h2>
+                <div style="overflow-x: auto;">
+                    <table id="quarterlyGrowthTable">
+                        <thead>
+                            <tr>
+                                <th>Quarter</th>
+                                <th>Customers</th>
+                                <th>Previous Quarter</th>
+                                <th>Growth Rate %</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <h2 style="margin-top: 40px;">📅 Yearly Customer Growth</h2>
+                <div style="overflow-x: auto;">
+                    <table id="yearlyGrowthTable">
+                        <thead>
+                            <tr>
+                                <th>Year</th>
+                                <th>Customers</th>
+                                <th>Previous Year</th>
+                                <th>Growth Rate %</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="upload-section">
+                <h3>📤 Upload New Data</h3>
+                <div class="upload-form">
+                    <input type="file" id="csvFile" accept=".csv" onchange="handleFileSelect()">
+                    <button class="upload-btn" id="uploadBtn" onclick="uploadData()" disabled>Upload CSV</button>
+                </div>
+                <div class="upload-status" id="uploadStatus"></div>
+                <small style="color: #7f8c8d; margin-top: 10px; display: block;">
+                    CSV must contain columns: Date, First Name, Phone, Price, Shop
+                </small>
+            </div>
+
+            <button class="refresh-btn" onclick="refreshData()">🔄 Refresh Data</button>
+        </div>
+    </div>
+
+    <script>
+        let charts = {};
+        let globalData;
+        let currentShopData;
+
+        const CHART_COLORS = [
+            '#4CC9F0', '#4361EE', '#3A0CA3', '#7209B7', '#F72585',
+            '#4895EF', '#560BAD', '#B5179E', '#3F37C9', '#0077B6',
+            '#00B4D8', '#90E0EF', '#0096C7', '#023E8A', '#0077B6'
+        ];
+
+        function getRegionColor(region) {
+            const regionColors = {
+                'Nairobi CBD': '#4361EE',
+                'Coastal Region': '#F72585',
+                'Western & Nyanza': '#4CC9F0',
+                'Central Region': '#7209B7',
+                'Rift Valley': '#3A0CA3',
+                'Diaspora': '#4895EF',
+                'Website': '#560BAD',
+                'Unknown': '#94a3b8'
+            };
+            return regionColors[region] || '#94a3b8';
+        }
+
+        function handleFileSelect() {
+            const fileInput = document.getElementById('csvFile');
+            const uploadBtn = document.getElementById('uploadBtn');
+            uploadBtn.disabled = !fileInput.files.length;
+        }
+
+        async function uploadData() {
+            const fileInput = document.getElementById('csvFile');
+            const uploadBtn = document.getElementById('uploadBtn');
+            const uploadStatus = document.getElementById('uploadStatus');
+
+            if (!fileInput.files.length) {
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const formData = new FormData();
+            formData.append('file', file);
+
+            // Disable button and show loading
+            uploadBtn.disabled = true;
+            uploadBtn.textContent = 'Uploading...';
+            uploadStatus.style.display = 'none';
+
+            try {
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (response.ok && result.success) {
+                    uploadStatus.className = 'upload-status success';
+                    uploadStatus.textContent = result.message;
+                    uploadStatus.style.display = 'block';
+
+                    // Clear file input
+                    fileInput.value = '';
+                    handleFileSelect();
+
+                    // Auto-refresh dashboard after successful upload
+                    setTimeout(() => {
+                        refreshData();
+                    }, 1000);
+
+                } else {
+                    throw new Error(result.error || 'Upload failed');
+                }
+
+            } catch (error) {
+                uploadStatus.className = 'upload-status error';
+                uploadStatus.textContent = 'Upload failed: ' + error.message;
+                uploadStatus.style.display = 'block';
+            } finally {
+                uploadBtn.disabled = false;
+                uploadBtn.textContent = 'Upload CSV';
+            }
+        }
+
+        async function loadData() {
+            const loadingOverlay = document.getElementById('loadingOverlay');
+            const content = document.getElementById('content');
+
+            // Get filter values from the consolidated period dropdown
+            const periodVal = document.getElementById('periodSelect').value;
+
+            loadingOverlay.classList.remove('hidden');
+            content.style.display = 'none';
+
+            try {
+                // Build query string
+                let url = '/api/data';
+                const params = new URLSearchParams();
+
+                if (periodVal !== 'all') {
+                    const [type, val] = periodVal.split('|');
+                    if (type === 'year') {
+                        params.append('year', val);
+                    } else if (type === 'half') {
+                        const [y, h] = val.split('-');
+                        params.append('year', y);
+                        params.append('half', h);
+                    } else if (type === 'quarter') {
+                        const year = val.substring(0, 4);
+                        const quarter = val.substring(4); // "Q1", "Q2" etc
+                        params.append('year', year);
+                        params.append('quarter', quarter);
+                    } else if (type === 'month') {
+                        const [year, month] = val.split('-');
+                        params.append('year', year);
+                        params.append('month', parseInt(month).toString());
+                    }
+                }
+
+                if (params.toString()) {
+                    url += '?' + params.toString();
+                }
+
+                const response = await fetch(url);
+                const data = await response.json();
+
+                if (data.error) {
+                    showError(data.error);
+                    return;
+                }
+
+                globalData = data;
+
+                // Populate filters if this is the first (unfiltered) load
+                if (periodVal === 'all') {
+                    populatePeriodSelect(globalData);
+                }
+
+                populateShopSelect(globalData);
+                updateDashboard();
+                content.style.display = 'block';
+            } catch (error) {
+                showError('Failed to load data: ' + error.message);
+            } finally {
+                loadingOverlay.classList.add('hidden');
+            }
+        }
+
+        function populatePeriodSelect(data) {
+            const periodSelect = document.getElementById('periodSelect');
+            if (!periodSelect || periodSelect.options.length > 1) return;
+
+            // 1. Years
+            if (data.growthRates && data.growthRates.yearly) {
+                const group = document.createElement('optgroup');
+                group.label = "Yearly Stats";
+                data.growthRates.yearly.forEach(y => {
+                    const opt = document.createElement('option');
+                    opt.value = `year|${y.period}`;
+                    opt.textContent = `Year ${y.period}`;
+                    group.appendChild(opt);
+                });
+                periodSelect.appendChild(group);
+            }
+
+            // 2. Semi-Annual
+            if (data.semiAnnual) {
+                const group = document.createElement('optgroup');
+                group.label = "Semi-Annual Stats";
+                // Filter to unique periods
+                const uniqueHalves = [...new Set(data.semiAnnual.map(h => h.period))].sort().reverse();
+                uniqueHalves.forEach(h => {
+                    const opt = document.createElement('option');
+                    opt.value = `half|${h}`;
+                    opt.textContent = h;
+                    group.appendChild(opt);
+                });
+                periodSelect.appendChild(group);
+            }
+
+            // 3. Quarterly
+            if (data.quarterly) {
+                const group = document.createElement('optgroup');
+                group.label = "Quarterly Stats";
+                const uniqueQuarters = [...new Set(data.quarterly.map(q => q.period))].sort().reverse();
+                uniqueQuarters.forEach(q => {
+                    const opt = document.createElement('option');
+                    opt.value = `quarter|${q}`;
+                    opt.textContent = q;
+                    group.appendChild(opt);
+                });
+                periodSelect.appendChild(group);
+            }
+
+            // 4. Monthly
+            if (data.monthly) {
+                const group = document.createElement('optgroup');
+                group.label = "Monthly Stats";
+                const uniqueMonths = [...new Set(data.monthly.map(m => m.period))].sort().reverse();
+                uniqueMonths.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = `month|${m}`;
+                    const d = new Date(m + "-01");
+                    const monthName = d.toLocaleString('default', { month: 'long', year: 'numeric' });
+                    opt.textContent = monthName;
+                    group.appendChild(opt);
+                });
+                periodSelect.appendChild(group);
+            }
+        }
+
+        function handleTimeFilterChange() {
+            loadData();
+        }
+
+        function resetFilters() {
+            document.getElementById('periodSelect').value = 'all';
+            document.getElementById('shopSelect').value = 'all';
+            loadData();
+        }
+
+        function populateShopSelect(data) {
+            const shopSelect = document.getElementById('shopSelect');
+            const currentSelected = shopSelect.value;
+
+            shopSelect.innerHTML = '<option value="all">All Shops</option>';
+            if (data.shops) {
+                Object.keys(data.shops).sort().forEach(shop => {
+                    const option = document.createElement('option');
+                    option.value = shop;
+                    option.textContent = shop;
+                    shopSelect.appendChild(option);
+                });
+            }
+
+            // Restore selection if possible
+            if (currentSelected && [...shopSelect.options].some(o => o.value === currentSelected)) {
+                shopSelect.value = currentSelected;
+            }
+        }
+
+        function updateDashboard() {
+            const selectedShop = document.getElementById('shopSelect').value;
+            const data = selectedShop === 'all' ? globalData : globalData.shops[selectedShop];
+
+            if (!data) return;
+
+            // Update overview
+            document.getElementById('totalPurchases').textContent = (data.overall.totalTransactions || 0).toLocaleString();
+            document.getElementById('totalVisitsSub').textContent = (data.overall.totalVisits || 0).toLocaleString() + ' unique visits';
+            document.getElementById('uniqueCustomers').textContent = (data.overall.totalCustomers || 0).toLocaleString();
+            document.getElementById('customerBreakdown').textContent =
+                `${(data.overall.oneTimers || 0).toLocaleString()} one-timers, ${(data.overall.repeatCustomers || 0).toLocaleString()} repeat`;
+
+            document.getElementById('totalRevenue').textContent = 'Ksh ' + (data.overall.totalRevenue || 0).toLocaleString();
+            document.getElementById('avgSpendPerVisitSub').textContent = 'Avg ' + (data.overall.avgSpendPerVisit || 0).toLocaleString() + ' per visit';
+
+            document.getElementById('avgSpendPerVisit').textContent = 'Ksh ' + (data.overall.avgSpendPerVisit || 0).toLocaleString();
+            document.getElementById('avgSpendPerCustomer').textContent = 'Ksh ' + (data.overall.avgSpendPerCustomer || 0).toLocaleString();
+
+            document.getElementById('repeatCustomers').textContent = (data.overall.repeatCustomers || 0).toLocaleString();
+            document.getElementById('repeatPctSub').textContent = (data.overall.repeatPct || 0).toFixed(1) + '% of total (' + (data.overall.performanceStatus || '') + ')';
+
+            document.getElementById('avgLifespan').textContent = (data.overall.avgLifespan || 0).toFixed(1);
+            document.getElementById('avgCycle').textContent = (data.overview.avgCycle || 0).toFixed(1);
+
+            // Update CAC in overview if it exists in the data
+            const currentCac = data.overall?.cac || data.overview?.cac || 0;
+            const currentMarketing = data.overall?.marketingSpend || data.overview?.marketingSpend || 0;
+            
+            // Display logic
+            if (currentCac > 0) {
+                document.getElementById('cacValue').textContent = 'Ksh ' + Math.round(currentCac).toLocaleString();
+                document.getElementById('marketingSpendSub').textContent = `Spend: Ksh ${Math.round(currentMarketing).toLocaleString()}`;
+            } else if (currentMarketing > 0) {
+                // If we have spend but no customers (rare)
+                document.getElementById('cacValue').textContent = 'Ksh ' + Math.round(currentMarketing).toLocaleString();
+                document.getElementById('marketingSpendSub').textContent = 'Spend: ' + Math.round(currentMarketing).toLocaleString();
+            } else {
+                document.getElementById('cacValue').textContent = '-';
+                document.getElementById('marketingSpendSub').textContent = 'No marketing spend recorded';
+            }
+
+            // Two Approaches Repeat
+            document.getElementById('repeatCountVisit').textContent = (data.overview.repeatCustomers || 0).toLocaleString();
+            document.getElementById('repeatPctVisit').textContent = (data.overview.repeatPct || 0).toFixed(2) + '% of total';
+            document.getElementById('repeatCountTrx').textContent = (data.overview.repeatCustomersTrx || 0).toLocaleString();
+            document.getElementById('repeatPctTrx').textContent = (data.overview.repeatPctTrx || 0).toFixed(2) + '% of total';
+
+            // Date Range
+            document.getElementById('dateRange').textContent = `Data Period: ${data.overview.startDate || 'N/A'} to ${data.overview.endDate || 'N/A'}`;
+
+            // Update export button URLs to match selected shop
+            const exportBtn = document.getElementById('exportRepeatBtn');
+            const exportOneBtn = document.getElementById('exportOneTimeBtn');
+            const exportLabel = document.getElementById('exportBarLabel');
+            const repeatCount = (data.overall.repeatCustomers || 0).toLocaleString();
+            const oneTimers = (data.overall.oneTimers || 0).toLocaleString();
+            if (selectedShop === 'all') {
+                exportBtn.href = '/api/export/repeat-customers';
+                exportOneBtn.href = '/api/export/one-time-customers';
+                exportLabel.textContent = `📋 ${repeatCount} Repeat + ${oneTimers} One-Time Customers — export for call centre follow-up`;
+            } else {
+                exportBtn.href = `/api/export/repeat-customers?shop=${encodeURIComponent(selectedShop)}`;
+                exportOneBtn.href = `/api/export/one-time-customers?shop=${encodeURIComponent(selectedShop)}`;
+                exportLabel.textContent = `📋 ${repeatCount} Repeat + ${oneTimers} One-Time Customers in ${selectedShop} — export for call centre`;
+            }
+
+
+
+            // Impact Section toggle
+            const impactSection = document.getElementById('shopImpactSection');
+            if (selectedShop === 'Ktda' && globalData.ktdaAnalysis) {
+                impactSection.style.display = 'block';
+                populateShopImpact(globalData.ktdaAnalysis);
+            } else if (selectedShop === 'Kisii' && globalData.kisiiAnalysis) {
+                impactSection.style.display = 'block';
+                populateShopImpact(globalData.kisiiAnalysis);
+            } else if (selectedShop === 'Hilton' && globalData.hiltonAnalysis) {
+                impactSection.style.display = 'block';
+                populateShopImpact(globalData.hiltonAnalysis);
+            } else if (selectedShop === 'Rejects' && globalData.rejectsAnalysis) {
+                impactSection.style.display = 'block';
+                populateShopImpact(globalData.rejectsAnalysis);
+            } else {
+                impactSection.style.display = 'none';
+            }
+
+            // Tables
+            const detailedMonthlyFields = [
+                'period', 'totalCustomers', 'newCustomers', 'newPct',
+                'retainedCustomers', 'retentionPct', 'repeatCustomers', 'repeatPct', 'repeatGrowth',
+                'avgSpendPerCustomer', 'avgSpendGrowth', 'avgLifespan', 'avgLifespanGrowth', 'cac'
+            ];
+            const summaryFields = ['period', 'repeatCustomers', 'avgSpendPerCustomer', 'avgLifespan', 'growthRate'];
+
+            populateTable('monthlyTable', data.monthly, detailedMonthlyFields);
+            populateComparativeTable(data.monthly);
+            populateTable('quarterlyTable', data.quarterly, summaryFields);
+            populateTable('semiAnnualTable', data.semiAnnual, summaryFields);
+
+            // Handle lists vs metrics
+            if (selectedShop === 'all') {
+                populateRegionalTable(globalData.regions);
+                populateGenderTable(globalData.gender);
+                populateProductTable(globalData.products);
+                populateTopShopsByRegion(globalData.topShopsByRegion);
+                populateMonthlyShopPerformance(globalData.shops);
+
+                // Populate Global Sections
+                if (globalData.cumulativeRetention) {
+                    updateCumulativeRetention(globalData.cumulativeRetention);
+                }
+                if (globalData.advancedProducts) {
+                    populateAdvancedProductAnalysis(globalData.advancedProducts.topCombos, globalData.advancedProducts.affinity);
+                }
+                if (globalData.regionalProducts) {
+                    populateRegionalProducts(globalData.regionalProducts);
+                }
+            }
+
+            // Always populate monthly overview, but filter if a shop is selected
+            if (globalData.monthlyShopOverview) {
+                populateMonthlyOverview(globalData.monthlyShopOverview, selectedShop);
+            }
+
+            // Populate Growth Rates (Monthly, Quarterly, Yearly)
+            if (data.growthRates) {
+                populateGrowthRates(data.growthRates);
+            }
+
+            // Populate the main growth table with current context data
+            // populateGrowthRatesTable(data.growthRates); // This line is removed as per instruction
+
+            // Charts
+            updateCharts(data, selectedShop);
+            updateLastUpdated(globalData.cache_status ? globalData.cache_status.last_updated : null);
+        }
+
+        function populateShopImpact(analysis) {
+            if (!analysis || analysis.error) return;
+
+            document.getElementById('impactTitle').textContent = `🏢 ${analysis.targetShop} Impact & Loyalty Analysis`;
+            document.getElementById('impactTotalCustomers').textContent = analysis.totalCustomers.toLocaleString();
+            document.getElementById('impactNewCustomers').textContent = analysis.newCustomers.toLocaleString();
+            document.getElementById('impactNewPct').textContent = analysis.newCustomerPercentage + '% Target-Only';
+            document.getElementById('impactExistingCustomers').textContent = analysis.existingCustomers.toLocaleString();
+            document.getElementById('impactExistingPct').textContent = analysis.existingCustomerPercentage + '% Cross-Shop';
+            document.getElementById('impactRevenueNew').textContent = 'Ksh ' + analysis.revenueFromNew.toLocaleString();
+            document.getElementById('impactRevenueExisting').textContent = 'Ksh ' + analysis.revenueFromExisting.toLocaleString();
+
+            // Populate Source Shops Table
+            const shopTbody = document.getElementById('impactSourceShopsTable').querySelector('tbody');
+            shopTbody.innerHTML = '';
+            (analysis.sourceShops || []).forEach(row => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${row.shop}</td><td>${row.customerCount.toLocaleString()}</td><td>${row.percentage}%</td>`;
+                shopTbody.appendChild(tr);
+            });
+
+            // Populate Source Regions Table
+            const regionTbody = document.getElementById('impactSourceRegionsTable').querySelector('tbody');
+            regionTbody.innerHTML = '';
+            (analysis.sourceRegions || []).forEach(row => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${row.region}</td><td>${row.customerCount.toLocaleString()}</td><td>${row.percentage}%</td>`;
+                regionTbody.appendChild(tr);
+            });
+
+            // Populate Loyalty Trends Table
+            const trendTbody = document.getElementById('loyaltyTrendsTable').querySelector('tbody');
+            trendTbody.innerHTML = '';
+            if (analysis.monthlyTrends && analysis.monthlyTrends.length > 0) {
+                document.getElementById('loyaltyTrendSection').style.display = 'block';
+                analysis.monthlyTrends.forEach(row => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td style="font-weight: bold;">${row.month}</td>
+                        <td>${row.total.toLocaleString()}</td>
+                        <td style="color: #27ae60; font-weight: 500;">${row.targetOnly.toLocaleString()}</td>
+                        <td style="color: #27ae60; font-style: italic;">${row.targetOnlyPct}%</td>
+                        <td style="color: #c0392b; font-weight: 500;">${row.crossShop.toLocaleString()}</td>
+                        <td style="color: #c0392b; font-style: italic;">${row.crossShopPct}%</td>
+                    `;
+                    trendTbody.appendChild(tr);
+                });
+            } else {
+                document.getElementById('loyaltyTrendSection').style.display = 'none';
+            }
+
+            // Update Impact Charts
+            updateImpactCharts(analysis);
+        }
+
+        function updateImpactCharts(analysis) {
+            // Source Shops Chart (Horizontal Bar)
+            createChart('impactSourceShopsChart', 'bar', {
+                labels: analysis.sourceShops.slice(0, 10).map(s => s.shop),
+                datasets: [{
+                    label: 'Customers',
+                    data: analysis.sourceShops.slice(0, 10).map(s => s.customerCount),
+                    backgroundColor: analysis.sourceShops.slice(0, 10).map((_, i) => CHART_COLORS[i % CHART_COLORS.length])
+                }]
+            }, { indexAxis: 'y' });
+
+            // Source Regions Chart (Pie)
+            createChart('impactSourceRegionsChart', 'pie', {
+                labels: analysis.sourceRegions.map(r => r.region),
+                datasets: [{
+                    data: analysis.sourceRegions.map(r => r.customerCount),
+                    backgroundColor: analysis.sourceRegions.map(r => getRegionColor(r.region))
+                }]
+            });
+        }
+
+        function populateTable(id, data, fields) {
+            const tbody = document.getElementById(id).querySelector('tbody');
+            tbody.innerHTML = '';
+            if (!data) return;
+
+            data.forEach(row => {
+                const tr = document.createElement('tr');
+                fields.forEach(f => {
+                    const td = document.createElement('td');
+                    let val = row[f];
+
+                    if (f.toLowerCase().includes('growth')) {
+                        const num = parseFloat(val) || 0;
+                        const color = num >= 0 ? '#2ecc71' : '#e74c3c';
+                        const sign = num > 0 ? '+' : '';
+                        td.innerHTML = `<span style="color:${color}; font-weight:bold;">${sign}${num}%</span>`;
+                    } else if (typeof val === 'number') {
+                        if (f.toLowerCase().includes('pct') || f.toLowerCase().includes('rate')) {
+                            val = val.toFixed(1) + '%';
+                            td.textContent = val;
+                        } else if (f.toLowerCase().includes('revenue') || f.toLowerCase().includes('spend') || f.toLowerCase() === 'cac') {
+                            val = 'Ksh ' + Math.round(val).toLocaleString();
+                            td.textContent = val;
+                        } else if (f.toLowerCase().includes('lifespan') || f.toLowerCase().includes('cycle')) {
+                            val = val.toFixed(1) + 'd';
+                            td.textContent = val;
+                        } else {
+                            val = Math.round(val).toLocaleString();
+                            td.textContent = val;
+                        }
+                    } else {
+                        td.textContent = val || '-';
+                    }
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+        }
+
+        function populateComparativeTable(data) {
+            const tbody = document.getElementById('comparativeTable').querySelector('tbody');
+            tbody.innerHTML = '';
+            if (!data || data.length === 0) return;
+
+            // Sort data reverse chronological
+            [...data].reverse().forEach(row => {
+                const tr = document.createElement('tr');
+
+                // Month
+                const monthTd = document.createElement('td');
+                monthTd.textContent = row.period;
+                monthTd.style.fontWeight = 'bold';
+                tr.appendChild(monthTd);
+
+                // Repeat Customers
+                const repeatTd = document.createElement('td');
+                repeatTd.textContent = Math.round(row.repeatCustomers).toLocaleString();
+                repeatTd.style.fontWeight = '500';
+                tr.appendChild(repeatTd);
+
+                // Repeat % Change
+                const repeatGrowthTd = document.createElement('td');
+                formatGrowthCell(repeatGrowthTd, row.repeatGrowth);
+                tr.appendChild(repeatGrowthTd);
+
+                // Avg Spend
+                const spendTd = document.createElement('td');
+                spendTd.textContent = 'Ksh ' + Math.round(row.avgSpendPerCustomer).toLocaleString();
+                spendTd.style.fontWeight = '500';
+                tr.appendChild(spendTd);
+
+                // Spend % Change
+                const spendGrowthTd = document.createElement('td');
+                formatGrowthCell(spendGrowthTd, row.avgSpendGrowth);
+                tr.appendChild(spendGrowthTd);
+
+                // Avg Lifespan
+                const lifeTd = document.createElement('td');
+                lifeTd.textContent = row.avgLifespan.toFixed(1) + 'd';
+                lifeTd.style.fontWeight = '500';
+                tr.appendChild(lifeTd);
+
+                // Lifespan % Change
+                const lifeGrowthTd = document.createElement('td');
+                formatGrowthCell(lifeGrowthTd, row.avgLifespanGrowth);
+                tr.appendChild(lifeGrowthTd);
+
+                tbody.appendChild(tr);
+            });
+        }
+
+        function formatGrowthCell(td, growth) {
+            if (growth === undefined || growth === null) {
+                td.innerHTML = '<span style="color:#7f8c8d;">-</span>';
+                return;
+            }
+            const color = growth >= 0 ? '#2ecc71' : '#e74c3c';
+            const sign = growth > 0 ? '+' : '';
+            td.innerHTML = `<span style="color:${color}; font-weight:bold;">${sign}${growth}%</span>`;
+        }
+
+        function formatValue(val, type) {
+            if (val === undefined || val === null) return '-';
+            if (type === 'money') return 'Ksh ' + Math.round(val).toLocaleString();
+            if (type === 'day') return val.toFixed(1) + 'd';
+            return Math.round(val).toLocaleString();
+        }
+
+        function populateRegionalTable(regions) {
+            const tbody = document.getElementById('regionalTable').querySelector('tbody');
+            tbody.innerHTML = '';
+            if (!regions) return;
+            regions.forEach(row => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${row.region}</td>
+                    <td>${row.totalShops}</td>
+                    <td>${row.totalCustomers.toLocaleString()}</td>
+                    <td>${row.repeatCustomers.toLocaleString()}</td>
+                    <td>${row.repeatPct}%</td>
+                    <td>Ksh ${row.totalRevenue.toLocaleString()}</td>
+                    <td>${row.repeatRevenuePct}%</td>
+                    <td>Ksh ${row.avgSpendPerCustomer.toLocaleString()}</td>
+                    <td>${row.performanceStatus}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function populateGenderTable(genderData) {
+            const tbody = document.getElementById('genderTable').querySelector('tbody');
+            tbody.innerHTML = '';
+            if (!genderData) return;
+            genderData.forEach(row => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${row.gender}</td>
+                    <td>${row.totalCustomers.toLocaleString()}</td>
+                    <td>${row.totalTransactions.toLocaleString()}</td>
+                    <td>Ksh ${row.totalRevenue.toLocaleString()}</td>
+                    <td>Ksh ${row.avgSpendPerCustomer.toLocaleString()}</td>
+                    <td>${row.avgTransactionsPerCustomer}</td>
+                    <td>${row.repeatCustomers.toLocaleString()}</td>
+                    <td>${row.repeatPct}%</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function populateProductTable(products) {
+            const tbody = document.getElementById('productTable').querySelector('tbody');
+            tbody.innerHTML = '';
+            if (!products) return;
+            products.forEach(row => {
+                const tr = document.createElement('tr');
+                const impactClass = row.discountImpact > 0 ? 'color: #e74c3c;' : 'color: #2ecc71;';
+                tr.innerHTML = `
+                    <td>${row.product}</td>
+                    <td>Ksh ${row.totalRevenue.toLocaleString()}</td>
+                    <td>${row.totalSales}</td>
+                    <td>Ksh ${row.avgPrice.toLocaleString()}</td>
+                    <td>${row.originalPrice ? 'Ksh ' + row.originalPrice.toLocaleString() : '-'}</td>
+                    <td style="${impactClass}">${row.discountImpact ? 'Ksh ' + row.discountImpact.toLocaleString() : '-'}</td>
+                    <td>${row.uniqueCustomers}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function populateAdvancedProductAnalysis(combos, affinity) {
+            // Combos
+            const comboTbody = document.getElementById('comboTable').querySelector('tbody');
+            comboTbody.innerHTML = '';
+            (combos || []).forEach(row => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${row.ComboName}</td><td>Ksh ${row.Revenue.toLocaleString()}</td><td>${row.SalesCount}</td>`;
+                comboTbody.appendChild(tr);
+            });
+
+            // Affinity
+            const affinityTbody = document.getElementById('affinityTable').querySelector('tbody');
+            affinityTbody.innerHTML = '';
+            (affinity || []).forEach(row => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${row.items}</td><td><span class="status-badge warning">${row.type}</span></td><td>${row.frequency}</td>`;
+                affinityTbody.appendChild(tr);
+            });
+        }
+
+        function populateRegionalProducts(regionalProducts) {
+            const container = document.getElementById('regionalProductsContainer');
+            container.innerHTML = '';
+            if (!regionalProducts) return;
+
+            Object.keys(regionalProducts).forEach(region => {
+                const card = document.createElement('div');
+                card.className = 'chart-card';
+
+                const productsHtml = regionalProducts[region].map((p, i) =>
+                    `<li style="padding: 5px 0; border-bottom: 1px solid #eee; display:flex; justify-content:space-between;">
+                        <span>${i + 1}. ${p.name}</span>
+                        <span style="font-weight:bold;">Ksh ${p.revenue.toLocaleString()}</span>
+                    </li>`
+                ).join('');
+
+                card.innerHTML = `
+                    <h3 style="color: ${getRegionColor(region)}">${region}</h3>
+                    <ul style="list-style: none; padding: 0;">${productsHtml}</ul>
+                 `;
+                container.appendChild(card);
+            });
+        }
+
+        function populateGrowthRates(data) {
+            const types = ['monthly', 'quarterly', 'yearly'];
+
+            types.forEach(type => {
+                const tableId = `${type}GrowthTable`;
+                const tbody = document.getElementById(tableId)?.querySelector('tbody');
+                if (!tbody) return;
+
+                tbody.innerHTML = '';
+                const rates = data[type] || [];
+
+                if (rates.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; padding:20px; color:#7f8c8d;">No historical growth data available for this section.</td></tr>`;
+                    return;
+                }
+
+                // Show in reverse chronological order (newest first)
+                [...rates].reverse().forEach(row => {
+                    const tr = document.createElement('tr');
+                    const growthColor = row.growth >= 0 ? '#2e7d32' : '#c62828';
+                    const growthSign = row.growth > 0 ? '+' : '';
+
+                    // Display "-" for the very first period since there's no previous to compare to
+                    const growthDisplay = row.is_start ? '<span style="color:#7f8c8d;">-</span>' :
+                        `<span style="font-weight:bold; color:${growthColor}">${growthSign}${row.growth}%</span>`;
+
+                    const prevDisplay = row.is_start ? '<span style="color:#7f8c8d;">N/A</span>' : row.previous.toLocaleString();
+
+                    tr.innerHTML = `
+                        <td style="font-weight:bold;">${row.period}</td>
+                        <td style="font-weight:bold; color:#2c3e50;">${row.current.toLocaleString()}</td>
+                        <td>${prevDisplay}</td>
+                        <td>${growthDisplay}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            });
+        }
+
+
+        function updateCumulativeRetention(data) {
+            const tbody = document.getElementById('cumulativeRetentionTable').querySelector('tbody');
+            tbody.innerHTML = '';
+            if (!data) return;
+            data.forEach(row => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${row.period}</td>
+                    <td>${row.totalCustomers.toLocaleString()}</td>
+                    <td>${row.retainedCustomers.toLocaleString()}</td>
+                    <td>${row.retentionPct}%</td>
+                    <td>${row.newCustomers.toLocaleString()}</td>
+                    <td>${row.newPct}%</td>
+                    <td>Ksh ${row.totalRevenue.toLocaleString()}</td>
+                    <td style="font-weight: bold; color: #e67e22;">${row.cumulativeRepeatCount.toLocaleString()}</td>
+                    <td style="font-weight: bold; color: #e67e22;">${row.cumulativeRepeatPct}%</td>
+                    <td>${row.cumulativeUniqueTotal.toLocaleString()}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+            updateCumulativeRetentionChart(data);
+        }
+
+        function populateTopShopsByRegion(data) {
+            const container = document.getElementById('topShopsByRegion');
+            container.innerHTML = '';
+            if (!data) return;
+
+            Object.keys(data).forEach(region => {
+                const div = document.createElement('div');
+                div.style.marginBottom = '20px';
+                div.innerHTML = `<h3 style="margin-bottom:10px;">${region}</h3>`;
+                const table = document.createElement('table');
+                table.innerHTML = `
+                    <thead>
+                        <tr><th>Shop</th><th>Revenue</th><th>Customers</th><th>Transactions</th><th>Avg/Customer</th></tr>
+                    </thead>
+            <tbody>
+                ${data[region].map(s => `
+                            <tr>
+                                <td>${s.shop}</td>
+                                <td>Ksh ${s.totalRevenue.toLocaleString()}</td>
+                                <td>${s.totalCustomers.toLocaleString()}</td>
+                                <td>${s.totalTransactions.toLocaleString()}</td>
+                                <td>Ksh ${s.avgSpendPerCustomer.toLocaleString()}</td>
+                            </tr>
+                        `).join('')}
+            </tbody>
+        `;
+                div.appendChild(table);
+                container.appendChild(div);
+            });
+        }
+
+        function populateGrowthRatesTable(rates) {
+            const section = document.getElementById('growthRatesSection');
+            if (!rates || rates.length === 0) {
+                section.style.display = 'none';
+                return;
+            }
+            section.style.display = 'block';
+
+            const tbody = document.getElementById('growthRatesTable').querySelector('tbody');
+            tbody.innerHTML = '';
+            rates.forEach(row => {
+                const tr = document.createElement('tr');
+
+                // Color coding for growth
+                const custColor = row.customer_growth >= 0 ? '#2ecc71' : '#e74c3c';
+                const unitsColor = row.units_growth >= 0 ? '#2ecc71' : '#e74c3c';
+
+                tr.innerHTML = `
+                    <td style="font-weight: bold;">${row.period_type}</td>
+                    <td>${row.current_period}</td>
+                    <td>${row.prev_period}</td>
+                    <td style="color: ${custColor}; font-weight: bold;">
+                        ${row.customer_growth > 0 ? '+' : ''}${row.customer_growth}% 
+                        <span style="font-size: 0.8em; color: #7f8c8d;">(${row.customers_current})</span>
+                    </td>
+                    <td style="color: ${unitsColor}; font-weight: bold;">
+                        ${row.units_growth > 0 ? '+' : ''}${row.units_growth}%
+                        <span style="font-size: 0.8em; color: #7f8c8d;">(${row.units_current})</span>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+
+
+        function populateGrowthBreakdown(breakdown) {
+            if (!breakdown) return;
+
+            const periods = [
+                { key: 'Monthly', id: 'monthlyBreakdownTable' },
+                { key: 'Quarterly', id: 'quarterlyBreakdownTable' },
+                { key: 'Semi-Annually', id: 'semiAnnualBreakdownTable' }
+            ];
+
+            periods.forEach(p => {
+                const tbody = document.getElementById(p.id).querySelector('tbody');
+                tbody.innerHTML = '';
+
+                const data = breakdown[p.key] || [];
+                // Take top 5 and bottom 2 maybe? Or just all. 
+                // Let's show top 10 for now.
+                data.slice(0, 10).forEach(row => {
+                    const tr = document.createElement('tr');
+                    const custColor = row.customer_growth >= 0 ? '#2ecc71' : '#e74c3c';
+                    const unitsColor = row.units_growth >= 0 ? '#2ecc71' : '#e74c3c';
+
+                    tr.innerHTML = `
+                        <td style="font-weight: bold;">${row.shop}</td>
+                        <td style="color: ${custColor}">${row.customer_growth > 0 ? '+' : ''}${row.customer_growth}%</td>
+                        <td style="color: ${unitsColor}">${row.units_growth > 0 ? '+' : ''}${row.units_growth}%</td>
+                     `;
+                    tbody.appendChild(tr);
+                });
+            });
+        }
+
+        function populateMonthlyShopPerformance(shopsData) {
+            const container = document.getElementById('monthlyShopPerformance');
+            container.innerHTML = '';
+            if (!shopsData) return;
+
+            Object.keys(shopsData).sort().forEach(shop => {
+                const details = document.createElement('details');
+                details.style.marginBottom = '10px';
+                details.innerHTML = `<summary style="cursor:pointer; padding:10px; background:#f0f2f5; border-radius:4px; font-weight:bold;">${shop} Performance</summary>`;
+                const table = document.createElement('table');
+                table.innerHTML = `
+                    <thead>
+                        <tr>
+                            <th>Month</th>
+                            <th>Total</th>
+                            <th>New</th>
+                            <th>New %</th>
+                            <th>Retained</th>
+                            <th>Ret. %</th>
+                            <th>Repeat</th>
+                            <th>Repeat %</th>
+                            <th>Avg Spend</th>
+                            <th>Avg Life</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${shopsData[shop].monthly.map(m => `
+                            <tr>
+                                <td>${m.period}</td>
+                                <td>${m.totalCustomers.toLocaleString()}</td>
+                                <td>${(m.newCustomers || 0).toLocaleString()}</td>
+                                <td>${(m.newPct || 0).toFixed(1)}%</td>
+                                <td>${m.retainedCustomers.toLocaleString()}</td>
+                                <td>${(m.retentionPct || 0).toFixed(1)}%</td>
+                                <td>${m.repeatCustomers.toLocaleString()}</td>
+                                <td>${(m.repeatPct || 0).toFixed(1)}%</td>
+                                <td>Ksh ${Math.round(m.avgSpendPerCustomer || 0).toLocaleString()}</td>
+                                <td>${(m.avgLifespan || 0).toFixed(1)}d</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                `;
+                details.appendChild(table);
+                container.appendChild(details);
+            });
+        }
+
+        function populateMonthlyOverview(data, selectedShop = 'all') {
+            if (!data || !data.customers || !data.units) return;
+
+            const customerTable = document.getElementById('monthlyCustomerOverviewTable');
+            const unitsTable = document.getElementById('monthlyUnitsOverviewTable');
+
+            if (!customerTable || !unitsTable) return;
+
+            // Get months from data
+            const months = data.customers.months || [];
+            let shops = Object.keys(data.customers.shops || {}).sort();
+
+            // Filter shops if a specific one is selected
+            if (selectedShop !== 'all') {
+                shops = shops.filter(s => s === selectedShop);
+            }
+
+            // Build customer table header
+            const customerHeader = customerTable.querySelector('thead tr');
+            customerHeader.innerHTML = '<th>Shop</th>';
+            months.forEach(month => {
+                const th = document.createElement('th');
+                th.textContent = month;
+                customerHeader.appendChild(th);
+            });
+            const totalTh = document.createElement('th');
+            totalTh.textContent = 'Total';
+            totalTh.style.fontWeight = 'bold';
+            totalTh.style.backgroundColor = '#2e7d32'; // Vibrant Green
+            totalTh.style.color = 'white';
+            customerHeader.appendChild(totalTh);
+
+            // Build customer table body
+            const customerBody = customerTable.querySelector('tbody');
+            customerBody.innerHTML = '';
+
+            if (shops.length === 0) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td colspan="${months.length + 2}" style="text-align: center; padding: 20px; color: #7f8c8d;">No shop data found for the selected period.</td>`;
+                customerBody.appendChild(tr);
+            } else {
+                // Sort shops by total customers for this table
+                const sortedShops = shops.map(shop => {
+                    const total = months.reduce((sum, month) => sum + (data.customers.shops[shop][month] || 0), 0);
+                    return { name: shop, total: total };
+                }).sort((a, b) => b.total - a.total);
+
+                sortedShops.forEach(item => {
+                    const shop = item.name;
+                    const tr = document.createElement('tr');
+                    const shopTd = document.createElement('td');
+                    shopTd.textContent = shop;
+                    shopTd.style.fontWeight = 'bold';
+                    tr.appendChild(shopTd);
+
+                    months.forEach(month => {
+                        const td = document.createElement('td');
+                        const value = data.customers.shops[shop][month] || 0;
+                        td.textContent = value.toLocaleString();
+                        tr.appendChild(td);
+                    });
+
+                    // Add total column
+                    const totalTd = document.createElement('td');
+                    totalTd.textContent = item.total.toLocaleString();
+                    totalTd.style.fontWeight = 'bold';
+                    totalTd.style.backgroundColor = '#e8f5e9';
+                    totalTd.style.color = '#1b5e20';
+                    tr.appendChild(totalTd);
+
+                    customerBody.appendChild(tr);
+                });
+            }
+
+            // Add totals row for customers (only if multiple shops)
+            if (selectedShop === 'all' && shops.length > 0) {
+                const customerTotalRow = document.createElement('tr');
+                customerTotalRow.style.fontWeight = 'bold';
+                customerTotalRow.style.backgroundColor = '#c8e6c9';
+                const totalLabel = document.createElement('td');
+                totalLabel.textContent = 'Total';
+                customerTotalRow.appendChild(totalLabel);
+
+                months.forEach(month => {
+                    const td = document.createElement('td');
+                    td.textContent = (data.customers.totals[month] || 0).toLocaleString();
+                    customerTotalRow.appendChild(td);
+                });
+
+                // Grand total
+                const grandTotalTd = document.createElement('td');
+                const grandTotal = months.reduce((sum, month) => sum + (data.customers.totals[month] || 0), 0);
+                grandTotalTd.textContent = grandTotal.toLocaleString();
+                grandTotalTd.style.backgroundColor = '#a5d6a7';
+                customerTotalRow.appendChild(grandTotalTd);
+                customerBody.appendChild(customerTotalRow);
+            }
+
+            // Build units table (same structure)
+            const unitsHeader = unitsTable.querySelector('thead tr');
+            unitsHeader.innerHTML = '<th>Shop</th>';
+            months.forEach(month => {
+                const th = document.createElement('th');
+                th.textContent = month;
+                unitsHeader.appendChild(th);
+            });
+            const unitsTotalTh = document.createElement('th');
+            unitsTotalTh.textContent = 'Total';
+            unitsTotalTh.style.fontWeight = 'bold';
+            unitsTotalTh.style.backgroundColor = '#1565c0'; // Vibrant Blue
+            unitsTotalTh.style.color = 'white';
+            unitsHeader.appendChild(unitsTotalTh);
+
+            // Build units table body
+            const unitsBody = unitsTable.querySelector('tbody');
+            unitsBody.innerHTML = '';
+
+            if (shops.length === 0) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td colspan="${months.length + 2}" style="text-align: center; padding: 20px; color: #7f8c8d;">No unit data found.</td>`;
+                unitsBody.appendChild(tr);
+            } else {
+                // Sort shops by total units for this table
+                const sortedUnitsShops = shops.map(shop => {
+                    const total = months.reduce((sum, month) => sum + (data.units.shops[shop][month] || 0), 0);
+                    return { name: shop, total: total };
+                }).sort((a, b) => b.total - a.total);
+
+                sortedUnitsShops.forEach(item => {
+                    const shop = item.name;
+                    const tr = document.createElement('tr');
+                    const shopTd = document.createElement('td');
+                    shopTd.textContent = shop;
+                    shopTd.style.fontWeight = 'bold';
+                    tr.appendChild(shopTd);
+
+                    months.forEach(month => {
+                        const td = document.createElement('td');
+                        const value = data.units.shops[shop][month] || 0;
+                        td.textContent = value.toLocaleString();
+                        tr.appendChild(td);
+                    });
+
+                    // Add total column
+                    const totalTd = document.createElement('td');
+                    totalTd.textContent = item.total.toLocaleString();
+                    totalTd.style.fontWeight = 'bold';
+                    totalTd.style.backgroundColor = '#e3f2fd';
+                    totalTd.style.color = '#0d47a1';
+                    tr.appendChild(totalTd);
+
+                    unitsBody.appendChild(tr);
+                });
+            }
+
+            // Add totals row for units
+            if (selectedShop === 'all' && shops.length > 0) {
+                const unitsTotalRow = document.createElement('tr');
+                unitsTotalRow.style.fontWeight = 'bold';
+                unitsTotalRow.style.backgroundColor = '#b3e5fc';
+                const unitsLabel = document.createElement('td');
+                unitsLabel.textContent = 'Total';
+                unitsTotalRow.appendChild(unitsLabel);
+
+                months.forEach(month => {
+                    const td = document.createElement('td');
+                    td.textContent = (data.units.totals[month] || 0).toLocaleString();
+                    unitsTotalRow.appendChild(td);
+                });
+
+                // Grand total for units
+                const unitsGrandTotalTd = document.createElement('td');
+                const unitsGrandTotal = months.reduce((sum, month) => sum + (data.units.totals[month] || 0), 0);
+                unitsGrandTotalTd.textContent = unitsGrandTotal.toLocaleString();
+                unitsGrandTotalTd.style.backgroundColor = '#81d4fa';
+                unitsTotalRow.appendChild(unitsGrandTotalTd);
+                unitsBody.appendChild(unitsTotalRow);
+            }
+
+            // Build products table
+            if (data.products) {
+                const prodTable = document.getElementById('monthlyProductsOverviewTable');
+                const prodHeader = prodTable.querySelector('thead tr');
+                const prodBody = prodTable.querySelector('tbody');
+
+                if (!prodTable) return;
+
+                prodHeader.innerHTML = '<th>Product</th>';
+                months.forEach(month => {
+                    const th = document.createElement('th');
+                    th.textContent = month;
+                    prodHeader.appendChild(th);
+                });
+                const pTotTh = document.createElement('th');
+                pTotTh.textContent = 'Total';
+                pTotTh.style.fontWeight = 'bold';
+                pTotTh.style.backgroundColor = '#fb8c00'; // Vibrant Orange
+                pTotTh.style.color = 'white';
+                prodHeader.appendChild(pTotTh);
+
+                prodBody.innerHTML = '';
+
+                // Map products to include their total for sorting
+                const productList = Object.keys(data.products.products || {}).map(prod => {
+                    const total = months.reduce((sum, month) => sum + (data.products.products[prod][month] || 0), 0);
+                    return { name: prod, total: total };
+                });
+
+                // Sort descending by total
+                productList.sort((a, b) => b.total - a.total);
+
+                if (productList.length === 0) {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td colspan="${months.length + 2}" style="text-align: center; padding: 20px; color: #7f8c8d;">No product data found for this period.</td>`;
+                    prodBody.appendChild(tr);
+                } else {
+                    productList.forEach(item => {
+                        const prod = item.name;
+                        const tr = document.createElement('tr');
+                        const pTd = document.createElement('td');
+                        pTd.textContent = prod;
+                        pTd.style.fontWeight = 'bold';
+                        tr.appendChild(pTd);
+
+                        months.forEach(month => {
+                            const td = document.createElement('td');
+                            const value = data.products.products[prod][month] || 0;
+                            td.textContent = value.toLocaleString();
+                            tr.appendChild(td);
+                        });
+
+                        const tTd = document.createElement('td');
+                        tTd.textContent = item.total.toLocaleString();
+                        tTd.style.fontWeight = 'bold';
+                        tTd.style.backgroundColor = '#fff3e0'; // Light Orange
+                        tTd.style.color = '#e65100'; // Dark Orange text
+                        tr.appendChild(tTd);
+                        prodBody.appendChild(tr);
+                    });
+                }
+            }
+        }
+
+        function calculateTrendline(data) {
+            const n = data.length;
+            if (n === 0) return [];
+
+            let sumX = 0;
+            let sumY = 0;
+            let sumXY = 0;
+            let sumXX = 0;
+
+            for (let i = 0; i < n; i++) {
+                sumX += i;
+                sumY += data[i];
+                sumXY += i * data[i];
+                sumXX += i * i;
+            }
+
+            const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+            const intercept = (sumY - slope * sumX) / n;
+
+            const trendline = [];
+            for (let i = 0; i < n; i++) {
+                trendline.push(Number((slope * i + intercept).toFixed(2)));
+            }
+            return trendline;
+        }
+
+        function updateCharts(data, selectedShop) {
+            const retentionData = data.monthly.map(m => m.retentionPct);
+            const retentionTrend = calculateTrendline(retentionData);
+
+            // Retention Chart
+            createChart('retentionChart', 'line', {
+                labels: data.monthly.map(m => m.period),
+                datasets: [{
+                    label: 'Retention Rate %',
+                    data: retentionData,
+                    borderColor: '#2ecc71',
+                    backgroundColor: 'rgba(46, 204, 113, 0.1)',
+                    tension: 0.1,
+                    fill: true
+                }, {
+                    label: 'Retention Trend',
+                    data: retentionTrend,
+                    borderColor: '#2c3e50',
+                    borderDash: [10, 5],
+                    pointRadius: 0,
+                    tension: 0,
+                    fill: false
+                }]
+            });
+
+            const repeatData = data.monthly.map(m => m.repeatPct);
+            const repeatTrend = calculateTrendline(repeatData);
+
+            // Repeat Rate Chart
+            createChart('repeatChart', 'line', {
+                labels: data.monthly.map(m => m.period),
+                datasets: [{
+                    label: 'Repeat Rate %',
+                    data: repeatData,
+                    borderColor: '#e74c3c',
+                    backgroundColor: 'rgba(231, 76, 60, 0.1)',
+                    tension: 0.1,
+                    fill: true
+                }, {
+                    label: 'Repeat Trend',
+                    data: repeatTrend,
+                    borderColor: '#f39c12',
+                    borderDash: [10, 5],
+                    pointRadius: 0,
+                    tension: 0,
+                    fill: false
+                }]
+            });
+
+            // Distribution Chart
+            createChart('distributionChart', 'pie', {
+                labels: ['One-Timers', 'Repeat Customers'],
+                datasets: [{
+                    data: [data.overall.oneTimers, data.overall.repeatCustomers],
+                    backgroundColor: ['#4CC9F0', '#F72585']
+                }]
+            });
+
+            // Quarterly Chart
+            createChart('quarterlyChart', 'bar', {
+                labels: data.quarterly.map(q => q.period),
+                datasets: [{
+                    label: 'Total Customers',
+                    data: data.quarterly.map(q => q.totalCustomers),
+                    backgroundColor: '#4361EE'
+                }, {
+                    label: 'Repeat Customers',
+                    data: data.quarterly.map(q => q.repeatCustomers),
+                    backgroundColor: '#F72585'
+                }]
+            });
+
+            if (selectedShop === 'all') {
+                // Regional Charts
+                createChart('regionalRevenueChart', 'bar', {
+                    labels: globalData.regions.map(r => r.region),
+                    datasets: [{
+                        label: 'Total Revenue (Ksh)',
+                        data: globalData.regions.map(r => r.totalRevenue),
+                        backgroundColor: globalData.regions.map(r => getRegionColor(r.region))
+                    }]
+                });
+
+                createChart('regionalRepeatChart', 'bar', {
+                    labels: globalData.regions.map(r => r.region),
+                    datasets: [{
+                        label: 'Repeat Rate %',
+                        data: globalData.regions.map(r => r.repeatPct),
+                        backgroundColor: globalData.regions.map(r => getRegionColor(r.region))
+                    }]
+                });
+            }
+
+            // Interval Chart
+            if (data.visitIntervals && data.visitIntervals.length > 0) {
+                createChart('intervalChart', 'bar', {
+                    labels: data.visitIntervals.map(i => `${i.bin} (${i.percentage}%)`),
+                    datasets: [{
+                        label: 'Customers',
+                        data: data.visitIntervals.map(i => i.count),
+                        backgroundColor: '#3498db'
+                    }]
+                });
+            }
+        }
+
+        function updateKtdaCharts(analysis) {
+            createChart('ktdaCustomerTypeChart', 'doughnut', {
+                labels: ['New Customers', 'Existing Customers'],
+                datasets: [{
+                    data: [analysis.newCustomers, analysis.existingCustomers],
+                    backgroundColor: ['#2ecc71', '#e74c3c']
+                }]
+            });
+
+            createChart('ktdaSourceShopsChart', 'bar', {
+                labels: analysis.sourceShops.slice(0, 5).map(s => s.shop),
+                datasets: [{
+                    label: 'Customer Count',
+                    data: analysis.sourceShops.slice(0, 5).map(s => s.customerCount),
+                    backgroundColor: '#3498db'
+                }]
+            });
+        }
+
+        function updateCumulativeRetentionChart(data) {
+            createChart('cumulativeRetentionChart', 'line', {
+                labels: data.map(d => d.period),
+                datasets: [{
+                    label: 'Cumulative Repeat %',
+                    data: data.map(d => d.cumulativeRepeatPct),
+                    borderColor: '#e67e22',
+                    tension: 0.1,
+                    fill: false
+                }, {
+                    label: 'Monthly Retention %',
+                    data: data.map(d => d.retentionPct),
+                    borderColor: '#2ecc71',
+                    tension: 0.1,
+                    fill: false
+                }]
+            });
+        }
+
+        function createChart(id, type, data) {
+            if (charts[id]) {
+                charts[id].destroy();
+            }
+            const ctx = document.getElementById(id).getContext('2d');
+            charts[id] = new Chart(ctx, {
+                type: type,
+                data: data,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'bottom' }
+                    }
+                }
+            });
+        }
+
+        function updateLastUpdated(serverTime) {
+            if (serverTime) {
+                document.getElementById('lastUpdated').innerHTML = `Data Freshness: <span style="color: #e67e22; font-weight: bold;">${serverTime}</span> (Auto-fallback to cache if Sheets timed out)`;
+            } else {
+                const now = new Date();
+                document.getElementById('lastUpdated').textContent = 'Last updated: ' + now.toLocaleString();
+            }
+        }
+
+        function showError(msg) {
+            const errorEl = document.getElementById('error');
+            errorEl.innerHTML = `<div class="error"><strong>Error:</strong> ${msg}</div>`;
+            errorEl.style.display = 'block';
+            document.getElementById('loading').style.display = 'none';
+        }
+
+        function refreshData() {
+            fetch('/api/refresh-now', { method: 'POST' })
+                .then(() => loadData())
+                .catch(err => showError('Refresh failed: ' + err.message));
+        }
+
+        async function loadInactiveCustomers() {
+            const mode = document.getElementById('inactivitySelect').value;
+            const tbody = document.getElementById('inactiveCustomersTable').querySelector('tbody');
+            const countLabel = document.getElementById('inactiveCountLabel');
+            const exportBtn = document.getElementById('exportInactiveBtn');
+            
+            let url = `/api/inactive-customers`;
+            let exportUrl = `/api/export/inactive-customers`;
+            
+            if (mode === 'threshold') {
+                const days = document.getElementById('inactivityDays').value;
+                url += `?days=${days}`;
+                exportUrl += `?days=${days}`;
+            } else {
+                const month = document.getElementById('cohortMonth').value;
+                const year = document.getElementById('cohortYear').value;
+                url += `?month=${month}&year=${year}`;
+                exportUrl += `?month=${month}&year=${year}`;
+            }
+
+            // Update export link
+            exportBtn.href = exportUrl;
+            
+            try {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:20px;">Searching for customers...</td></tr>';
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                tbody.innerHTML = '';
+                if (!data || data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:20px; color:#64748b;">No customers found matching this criteria.</td></tr>';
+                    countLabel.textContent = 'No customers to show.';
+                    return;
+                }
+                
+                countLabel.textContent = `Found ${data.length.toLocaleString()} customers who haven't returned since their last visit.`;
+                
+                // Show top 100 in the UI for performance
+                data.slice(0, 100).forEach(cust => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td style="font-weight:bold;">${cust.firstName}</td>
+                        <td>${cust.phone}</td>
+                        <td><span class="status-badge" style="background:#f1f5f9; color:#475569; border:1px solid #e2e8f0;">${cust.lastShop}</span></td>
+                        <td>${cust.lastPurchaseDate}</td>
+                        <td style="color:#e11d48; font-weight:bold;">${cust.daysInactive}d gone</td>
+                        <td>Ksh ${Math.round(cust.totalSpend).toLocaleString()}</td>
+                        <td><a href="tel:${cust.phone}" style="text-decoration:none; color:#2563eb; font-weight:bold;">📞 Call</a></td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+                
+                if (data.length > 100) {
+                    const noteRow = document.createElement('tr');
+                    noteRow.innerHTML = `<td colspan="7" style="text-align:center; background:#f8fafc; font-style:italic; font-size:0.9em; color:#64748b;">Showing top 100 customers by spend. Export CSV for the full list of ${data.length.toLocaleString()} customers.</td>`;
+                    tbody.appendChild(noteRow);
+                }
+            } catch (err) {
+                tbody.innerHTML = `<tr><td colspan="7" style="color:red; text-align:center;">Error: ${err.message}</td></tr>`;
+            }
+        }
+
+        function toggleInactivityMode() {
+            const mode = document.getElementById('inactivitySelect').value;
+            document.getElementById('thresholdMode').style.display = mode === 'threshold' ? 'flex' : 'none';
+            document.getElementById('cohortMode').style.display = mode === 'cohort' ? 'flex' : 'none';
+            loadInactiveCustomers();
+        }
+
+        // Initial load
+        window.onload = () => {
+            loadData();
+            toggleInactivityMode(); // This will trigger loadInactiveCustomers()
+        };
+    </script>
+</body>
+
+</html>
