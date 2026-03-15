@@ -2029,21 +2029,6 @@ def upload_data():
         print(f"[TRACEBACK] {traceback.format_exc()}")
         return jsonify({'error': f'Upload failed: {str(e)}'}), 500
 
-if __name__ == '__main__':
-    import socket
-    
-    # Get local IP address
-    hostname = socket.gethostname()
-    local_ip = socket.gethostbyname(hostname)
-    
-    print("Starting Customer Retention Dashboard...")
-    print("=" * 60)
-    print(f"Local access: http://localhost:5002")
-    print(f"Network access: http://{local_ip}:5002")
-    print("=" * 60)
-    print("Share the network URL with others on the same network")
-    print("Press CTRL+C to quit")
-    print("=" * 60)
-    
-    # Bind to 0.0.0.0 to allow external connections
-    app.run(debug=True, host='0.0.0.0', port=5002)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5002))
+    app.run(host="0.0.0.0", port=port)
