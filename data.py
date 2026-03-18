@@ -603,32 +603,31 @@ def calculate_overall_repeat_breakdown(df):
     except Exception as e:
         raise Exception(f"Error calculating overall repeat breakdown: {str(e)}")
 
-def calculate_monthly_data(df):
-    """Calculate month-to-month metrics with MoM growth and lifecycle stats"""
+
+def _calculate_trend_data(df_copy, period_column):
+    """Generic function to calculate period-over-period trend data (Monthly, Quarterly, Semi-Annual, etc)"""
     try:
-        df_copy = df.copy()
-        df_copy['YearMonth'] = df_copy['Date'].dt.to_period('M')
-        months = sorted(df_copy['YearMonth'].unique())
+        periods = sorted(df_copy[period_column].unique())
         
-        monthly_results = []
+        results = []
         all_seen_so_far = set()
-        prev_month_df = None
+        prev_period_df = None
         prev_result = None
         
-        for month in months:
-            month_df = df_copy[df_copy['YearMonth'] == month]
+        for period in periods:
+            period_df = df_copy[df_copy[period_column] == period]
             # Get unique customers and ensure no NaN/Null values crash calculations
-            current_customers = {cid for cid in month_df['Customer_ID'].unique() if pd.notna(cid)}
+            current_customers = {cid for cid in period_df['Customer_ID'].unique() if pd.notna(cid)}
             current_count = len(current_customers)
             
             if current_count == 0:
                 continue
 
-            # 1. Retention (from previous month)
+            # 1. Retention (from previous period)
             retained_count = 0
             retention_pct = 0
-            if prev_month_df is not None and not prev_month_df.empty:
-                prev_customers = set(prev_month_df['Customer_ID'].unique())
+            if prev_period_df is not None and not prev_period_df.empty:
+                prev_customers = set(prev_period_df['Customer_ID'].unique())
                 retained_customers = current_customers.intersection(prev_customers)
                 retained_count = len(retained_customers)
                 retention_pct = (retained_count / len(prev_customers) * 100) if len(prev_customers) > 0 else 0
@@ -639,30 +638,35 @@ def calculate_monthly_data(df):
             new_pct = (new_count / current_count * 100) if current_count > 0 else 0
             
             # 3. Repeat (Visit-day based)
-            month_df_copy = month_df.copy()
-            month_df_copy['Visit_Date'] = month_df_copy['Date'].dt.date
-            visit_days = month_df_copy.groupby('Customer_ID')['Visit_Date'].nunique()
+            period_df_copy = period_df.copy()
+            period_df_copy['Visit_Date'] = period_df_copy['Date'].dt.date
+            visit_days = period_df_copy.groupby('Customer_ID')['Visit_Date'].nunique()
             repeat_count = (visit_days > 1).sum()
             repeat_pct = (repeat_count / current_count * 100) if current_count > 0 else 0
             
             # 4. Repeat Transaction Based
-            trx_counts = month_df.groupby('Customer_ID').size()
+            trx_counts = period_df.groupby('Customer_ID').size()
             repeat_trx_count = (trx_counts > 1).sum()
             repeat_trx_pct = (repeat_trx_count / current_count * 100) if current_count > 0 else 0
             
             # 5. Average Spend
-            total_revenue = month_df['Price'].sum()
+            total_revenue = period_df['Price'].sum()
             avg_spend = total_revenue / current_count if current_count > 0 else 0
             
-            # 6. Average Lifespan (Global context)
-            # Find global min/max for these customers across the entire dataset
-            # Use reindex to safely skip any IDs that might not be in the grouped index
-            all_customer_lifespans = df.groupby('Customer_ID')['Date'].agg(['min', 'max'])
-            lifespan_stats = all_customer_lifespans.reindex(list(current_customers)).dropna()
-            avg_lifespan = (lifespan_stats['max'] - lifespan_stats['min']).dt.days.mean() if not lifespan_stats.empty else 0
+            # 6. Average Lifespan (Cumulative up to this period)
+            cumulative_df = df_copy[df_copy[period_column] <= period]
+            cum_lifespan_df = cumulative_df.groupby('Customer_ID')['Date'].agg(['min', 'max'])
+            cum_lifespan_df['lifespan_days'] = (cum_lifespan_df['max'] - cum_lifespan_df['min']).dt.days
+            repeat_customers_lifespan = cum_lifespan_df[cum_lifespan_df['lifespan_days'] > 0]
+            avg_lifespan = repeat_customers_lifespan['lifespan_days'].mean() if len(repeat_customers_lifespan) > 0 else 0
             
+            # Extract Revenue for backward compatibility with semi-annual logic
+            repeat_customer_ids = visit_days[visit_days > 1].index
+            repeat_revenue = period_df[period_df['Customer_ID'].isin(repeat_customer_ids)]['Price'].sum()
+            repeat_revenue_pct = (repeat_revenue / total_revenue * 100) if total_revenue > 0 else 0
+                
             result = {
-                'period': str(month),
+                'period': str(period),
                 'totalCustomers': int(current_count),
                 'newCustomers': int(new_count),
                 'newPct': round(float(new_pct), 2),
@@ -674,19 +678,22 @@ def calculate_monthly_data(df):
                 'repeatPctTrx': round(float(repeat_trx_pct), 2),
                 'avgSpendPerCustomer': round(float(avg_spend), 2),
                 'avgLifespan': round(float(avg_lifespan), 2),
-                'growthRate': 0,  # Default for first month
+                'growthRate': 0,  # Default for first period
                 'marketingSpend': 0,
-                'cac': 0
+                'cac': 0,
+                'totalRevenue': round(float(total_revenue), 2),
+                'repeatRevenue': round(float(repeat_revenue), 2),
+                'repeatRevenuePct': round(float(repeat_revenue_pct), 2)
             }
             
             # 7. CAC Calculation from Sheet Column
-            if 'MARKETING EXPENSE' in month_df.columns:
+            if 'MARKETING EXPENSE' in period_df.columns:
                 # Sum unique daily spends to avoid double counting if spend is recorded on every row
-                marketing_cost = month_df.groupby(month_df['Date'].dt.date)['MARKETING EXPENSE'].max().sum()
+                marketing_cost = period_df.groupby(period_df['Date'].dt.date)['MARKETING EXPENSE'].max().sum()
                 result['marketingSpend'] = float(marketing_cost)
                 result['cac'] = round(marketing_cost / new_count, 2) if new_count > 0 else 0
             
-            # MoM Growth & Comparative Values
+            # Period-over-Period Growth & Comparative Values
             def get_growth(curr, prev):
                 if prev is None or prev == 0: return 0
                 return round(((curr - prev) / prev * 100), 2)
@@ -709,14 +716,24 @@ def calculate_monthly_data(df):
                 result['prev_avgLifespan'] = 0
                 result['avgLifespanGrowth'] = 0
             
-            monthly_results.append(result)
+            results.append(result)
             all_seen_so_far.update(current_customers)
-            prev_month_df = month_df
+            prev_period_df = period_df
             prev_result = result
             
-        return monthly_results
+        return results
+    except Exception as e:
+        raise Exception(f"Error calculating trend data: {str(e)}")
+
+def calculate_monthly_data(df):
+    """Calculate month-to-month metrics with MoM growth and lifecycle stats"""
+    try:
+        df_copy = df.copy()
+        df_copy['YearMonth'] = df_copy['Date'].dt.to_period('M')
+        return _calculate_trend_data(df_copy, 'YearMonth')
     except Exception as e:
         raise Exception(f"Error calculating monthly data: {str(e)}")
+
 
 def calculate_cumulative_retention(df, start_date='2025-04-01'):
     """
@@ -796,19 +813,7 @@ def calculate_quarterly_data(df):
     try:
         df_copy = df.copy()
         df_copy['YearQuarter'] = df_copy['Date'].dt.to_period('Q')
-        quarters = sorted(df_copy['YearQuarter'].unique())
-        
-        quarterly_results = []
-        prev_quarter_df = None
-        
-        for quarter in quarters:
-            quarter_df = df_copy[df_copy['YearQuarter'] == quarter]
-            result = calculate_retention_repeat(quarter_df, prev_quarter_df, full_df=df)
-            result['period'] = str(quarter)
-            quarterly_results.append(result)
-            prev_quarter_df = quarter_df
-        
-        return quarterly_results
+        return _calculate_trend_data(df_copy, 'YearQuarter')
     except Exception as e:
         raise Exception(f"Error calculating quarterly data: {str(e)}")
 
@@ -885,34 +890,7 @@ def calculate_semiannual_performance(df):
         df_copy = df.copy()
         df_copy['Half'] = df_copy['Date'].dt.month.apply(lambda x: 'H1' if x <= 6 else 'H2')
         df_copy['YearHalf'] = df_copy['Date'].dt.year.astype(str) + '-' + df_copy['Half']
-        df_copy['Visit_Date'] = df_copy['Date'].dt.date
-        
-        halves = sorted(df_copy['YearHalf'].unique())
-        semi_annual_results = []
-        prev_half_df = None
-        
-        for half in halves:
-            half_df = df_copy[df_copy['YearHalf'] == half]
-            
-            # Basic retention metrics
-            result = calculate_retention_repeat(half_df, prev_half_df, full_df=df)
-            result['period'] = half
-            
-            # Add revenue breakdown
-            visit_days = half_df.groupby('Customer_ID')['Visit_Date'].nunique()
-            repeat_customer_ids = visit_days[visit_days > 1].index
-            total_revenue = half_df['Price'].sum()
-            repeat_revenue = half_df[half_df['Customer_ID'].isin(repeat_customer_ids)]['Price'].sum()
-            repeat_revenue_pct = (repeat_revenue / total_revenue * 100) if total_revenue > 0 else 0
-            
-            result['totalRevenue'] = round(float(total_revenue), 2)
-            result['repeatRevenue'] = round(float(repeat_revenue), 2)
-            result['repeatRevenuePct'] = round(float(repeat_revenue_pct), 2)
-            
-            semi_annual_results.append(result)
-            prev_half_df = half_df
-        
-        return semi_annual_results
+        return _calculate_trend_data(df_copy, 'YearHalf')
     except Exception as e:
         raise Exception(f"Error calculating semi-annual data: {str(e)}")
 
@@ -920,18 +898,8 @@ def calculate_yearly_data(df):
     """Calculate yearly metrics"""
     try:
         df_copy = df.copy()
-        df_copy['Visit_Date'] = df_copy['Date'].dt.date
-        visit_days_year = df_copy.groupby('Customer_ID')['Visit_Date'].nunique()
-        repeat_customers_year = (visit_days_year > 1).sum()
-        total_customers_year = df['Customer_ID'].nunique()
-        repeat_pct_year = (repeat_customers_year / total_customers_year * 100) if total_customers_year > 0 else 0
-        
-        return {
-            'totalCustomers': int(total_customers_year),
-            'repeatCustomers': int(repeat_customers_year),
-            'repeatPct': float(repeat_pct_year),
-            'status': '✓' if 20 <= repeat_pct_year <= 30 else '✗'
-        }
+        df_copy['Year'] = df_copy['Date'].dt.year.astype(str)
+        return _calculate_trend_data(df_copy, 'Year')
     except Exception as e:
         raise Exception(f"Error calculating yearly data: {str(e)}")
 

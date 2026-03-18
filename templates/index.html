@@ -501,19 +501,22 @@
             <div class="tables-section">
                 <h2>👋 Inactive Customers (Win-Back Tool)</h2>
                 <div class="overview-grid" style="grid-template-columns: 1fr; gap: 10px; margin-bottom: 20px;">
-                    <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap; background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <div
+                        style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap; background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
                         <div style="display: flex; align-items: center; gap: 10px;">
                             <label style="font-weight: bold; color: #2c3e50;">Inactivity Period:</label>
-                            <select id="inactivitySelect" onchange="toggleInactivityMode()" style="padding: 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer; min-width: 200px;">
+                            <select id="inactivitySelect" onchange="toggleInactivityMode()"
+                                style="padding: 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer; min-width: 200px;">
                                 <option value="threshold">By Inactivity Period (Days)</option>
                                 <option value="cohort" selected>By Last Purchase Month</option>
                             </select>
                         </div>
-                        
+
                         <!-- Threshold Mode -->
                         <div id="thresholdMode" style="display: none; align-items: center; gap: 10px;">
                             <label style="font-weight: bold; color: #2c3e50;">Days Gone:</label>
-                            <select id="inactivityDays" onchange="loadInactiveCustomers()" style="padding: 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer;">
+                            <select id="inactivityDays" onchange="loadInactiveCustomers()"
+                                style="padding: 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer;">
                                 <option value="30">30 Days</option>
                                 <option value="60">60 Days</option>
                                 <option value="90">90 Days</option>
@@ -525,7 +528,8 @@
                         <!-- Cohort Mode -->
                         <div id="cohortMode" style="display: flex; align-items: center; gap: 10px;">
                             <label style="font-weight: bold; color: #2c3e50;">Last Purchase Month:</label>
-                            <select id="cohortMonth" onchange="loadInactiveCustomers()" style="padding: 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer;">
+                            <select id="cohortMonth" onchange="loadInactiveCustomers()"
+                                style="padding: 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer;">
                                 <option value="1">January</option>
                                 <option value="2">February</option>
                                 <option value="3">March</option>
@@ -539,7 +543,8 @@
                                 <option value="11">November</option>
                                 <option value="12">December</option>
                             </select>
-                            <select id="cohortYear" onchange="loadInactiveCustomers()" style="padding: 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer;">
+                            <select id="cohortYear" onchange="loadInactiveCustomers()"
+                                style="padding: 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer;">
                                 <option value="2025">2025</option>
                                 <option value="2026" selected>2026</option>
                             </select>
@@ -547,7 +552,8 @@
                         <div style="color: #64748b; font-size: 0.9em;">
                             <span id="inactiveCountLabel">Looking for customers to bring back...</span>
                         </div>
-                        <a id="exportInactiveBtn" href="/api/export/inactive-customers?days=30" class="export-btn" style="background-color: #e67e22; margin-left: auto; margin-right: 0;">
+                        <a id="exportInactiveBtn" href="/api/export/inactive-customers?days=30" class="export-btn"
+                            style="background-color: #e67e22; margin-left: auto; margin-right: 0;">
                             ⬇️ Export Inactive List for Calls/SMS
                         </a>
                     </div>
@@ -783,10 +789,19 @@
                     <thead>
                         <tr>
                             <th>Quarter</th>
-                            <th>Repeat Customers</th>
-                            <th>Avg Spend / Customer</th>
-                            <th>Avg Lifespan (Days)</th>
-                            <th>% Change</th>
+                            <th>Total</th>
+                            <th>New</th>
+                            <th>New %</th>
+                            <th>Retained</th>
+                            <th>Ret. %</th>
+                            <th>Repeat</th>
+                            <th>Rep. %</th>
+                            <th>Rep. Growth</th>
+                            <th>Avg Spend</th>
+                            <th>Spend Growth</th>
+                            <th>Avg Life</th>
+                            <th>Life Growth</th>
+                            <th style="background-color: #9b59b6; color: white;">CAC (Ksh)</th>
                         </tr>
                     </thead>
                     <tbody></tbody>
@@ -799,10 +814,44 @@
                     <thead>
                         <tr>
                             <th>Period</th>
-                            <th>Repeat Customers</th>
-                            <th>Avg Spend / Customer</th>
-                            <th>Avg Lifespan (Days)</th>
-                            <th>% Change</th>
+                            <th>Total</th>
+                            <th>New</th>
+                            <th>New %</th>
+                            <th>Retained</th>
+                            <th>Ret. %</th>
+                            <th>Repeat</th>
+                            <th>Rep. %</th>
+                            <th>Rep. Growth</th>
+                            <th>Avg Spend</th>
+                            <th>Spend Growth</th>
+                            <th>Avg Life</th>
+                            <th>Life Growth</th>
+                            <th style="background-color: #9b59b6; color: white;">CAC (Ksh)</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <div class="tables-section">
+                <h2>📊 Yearly Performance</h2>
+                <table id="yearlyTable">
+                    <thead>
+                        <tr>
+                            <th>Year</th>
+                            <th>Total</th>
+                            <th>New</th>
+                            <th>New %</th>
+                            <th>Retained</th>
+                            <th>Ret. %</th>
+                            <th>Repeat</th>
+                            <th>Rep. %</th>
+                            <th>Rep. Growth</th>
+                            <th>Avg Spend</th>
+                            <th>Spend Growth</th>
+                            <th>Avg Life</th>
+                            <th>Life Growth</th>
+                            <th style="background-color: #9b59b6; color: white;">CAC (Ksh)</th>
                         </tr>
                     </thead>
                     <tbody></tbody>
@@ -1315,7 +1364,7 @@
             // Update CAC in overview if it exists in the data
             const currentCac = data.overall?.cac || data.overview?.cac || 0;
             const currentMarketing = data.overall?.marketingSpend || data.overview?.marketingSpend || 0;
-            
+
             // Display logic
             if (currentCac > 0) {
                 document.getElementById('cacValue').textContent = 'Ksh ' + Math.round(currentCac).toLocaleString();
@@ -1384,8 +1433,9 @@
 
             populateTable('monthlyTable', data.monthly, detailedMonthlyFields);
             populateComparativeTable(data.monthly);
-            populateTable('quarterlyTable', data.quarterly, summaryFields);
-            populateTable('semiAnnualTable', data.semiAnnual, summaryFields);
+            populateTable('quarterlyTable', data.quarterly, detailedMonthlyFields);
+            populateTable('semiAnnualTable', data.semiAnnual, detailedMonthlyFields);
+            if (data.yearly) populateTable('yearlyTable', data.yearly, detailedMonthlyFields);
 
             // Handle lists vs metrics
             if (selectedShop === 'all') {
@@ -2380,10 +2430,10 @@
             const tbody = document.getElementById('inactiveCustomersTable').querySelector('tbody');
             const countLabel = document.getElementById('inactiveCountLabel');
             const exportBtn = document.getElementById('exportInactiveBtn');
-            
+
             let url = `/api/inactive-customers`;
             let exportUrl = `/api/export/inactive-customers`;
-            
+
             if (mode === 'threshold') {
                 const days = document.getElementById('inactivityDays').value;
                 url += `?days=${days}`;
@@ -2397,21 +2447,21 @@
 
             // Update export link
             exportBtn.href = exportUrl;
-            
+
             try {
                 tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:20px;">Searching for customers...</td></tr>';
                 const response = await fetch(url);
                 const data = await response.json();
-                
+
                 tbody.innerHTML = '';
                 if (!data || data.length === 0) {
                     tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:20px; color:#64748b;">No customers found matching this criteria.</td></tr>';
                     countLabel.textContent = 'No customers to show.';
                     return;
                 }
-                
+
                 countLabel.textContent = `Found ${data.length.toLocaleString()} customers who haven't returned since their last visit.`;
-                
+
                 // Show top 100 in the UI for performance
                 data.slice(0, 100).forEach(cust => {
                     const tr = document.createElement('tr');
@@ -2426,7 +2476,7 @@
                     `;
                     tbody.appendChild(tr);
                 });
-                
+
                 if (data.length > 100) {
                     const noteRow = document.createElement('tr');
                     noteRow.innerHTML = `<td colspan="7" style="text-align:center; background:#f8fafc; font-style:italic; font-size:0.9em; color:#64748b;">Showing top 100 customers by spend. Export CSV for the full list of ${data.length.toLocaleString()} customers.</td>`;
