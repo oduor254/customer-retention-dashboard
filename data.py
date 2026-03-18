@@ -11,6 +11,7 @@ from requests.adapters import HTTPAdapter
 import requests
 import io
 import os
+import threading
 
 app = Flask(__name__)
 
@@ -614,6 +615,9 @@ def _calculate_trend_data(df_copy, period_column):
         prev_period_df = None
         prev_result = None
         
+        customer_min_date = {}
+        customer_max_date = {}
+        
         for period in periods:
             period_df = df_copy[df_copy[period_column] == period]
             # Get unique customers and ensure no NaN/Null values crash calculations
@@ -654,11 +658,17 @@ def _calculate_trend_data(df_copy, period_column):
             avg_spend = total_revenue / current_count if current_count > 0 else 0
             
             # 6. Average Lifespan (Cumulative up to this period)
-            cumulative_df = df_copy[df_copy[period_column] <= period]
-            cum_lifespan_df = cumulative_df.groupby('Customer_ID')['Date'].agg(['min', 'max'])
-            cum_lifespan_df['lifespan_days'] = (cum_lifespan_df['max'] - cum_lifespan_df['min']).dt.days
-            repeat_customers_lifespan = cum_lifespan_df[cum_lifespan_df['lifespan_days'] > 0]
-            avg_lifespan = repeat_customers_lifespan['lifespan_days'].mean() if len(repeat_customers_lifespan) > 0 else 0
+            period_dates = period_df.groupby('Customer_ID')['Date'].agg(['min', 'max'])
+            for cid, row in period_dates.iterrows():
+                if cid not in customer_min_date:
+                    customer_min_date[cid] = row['min']
+                # Update max date if this row's latest date is newer
+                if cid not in customer_max_date or row['max'] > customer_max_date[cid]:
+                    customer_max_date[cid] = row['max']
+                    
+            lifespans = [(customer_max_date[cid] - customer_min_date[cid]).days for cid in customer_max_date]
+            repeat_lifespans = [l for l in lifespans if l > 0]
+            avg_lifespan = sum(repeat_lifespans) / len(repeat_lifespans) if repeat_lifespans else 0
             
             # Extract Revenue for backward compatibility with semi-annual logic
             repeat_customer_ids = visit_days[visit_days > 1].index
@@ -1639,93 +1649,40 @@ def get_data():
             
         print("[INFO] Calculating metrics...")
         
-        # Initialize data dictionary
-        data = {}
-        
-        # Calculate per shop data - only for shops that exist in data
-        shops = {}
-        if 'Shop' in df.columns:
-            available_shops = df['Shop'].unique()
-            
-            for shop in available_shops:
-                if shop in SHOP_REGION_MAP:  # Only process shops that are mapped to regions
-                    shop_df = df[df['Shop'] == shop]
-                    if not shop_df.empty and len(shop_df) > 0:
-                        shops[shop] = {
-                            'overall': calculate_overall_performance(shop_df),
-                            'overallBreakdown': calculate_overall_repeat_breakdown(shop_df),
-                            'overview': calculate_overview(shop_df),
-                            'monthly': calculate_monthly_data(shop_df),
-                            'monthlyRepeatBreakdown': calculate_monthly_repeat_breakdown(shop_df),
-                            'quarterly': calculate_quarterly_data(shop_df),
-                            'semiAnnual': calculate_semiannual_performance(shop_df),
-                            'semiAnnualBreakdown': calculate_semiannual_repeat_breakdown(shop_df),
-                            'yearly': calculate_yearly_data(shop_df),
-                            'visitIntervals': calculate_visit_interval_distribution(shop_df),
-                            'growthRates': calculate_growth_rates(shop_df)
-                        }
-        data['shops'] = shops
-        
-        # Calculate overall data
-        overall_results = {
-            'overall': calculate_overall_performance(df),
-            'overallBreakdown': calculate_overall_repeat_breakdown(df),
-            'overview': calculate_overview(df),
-            'monthly': calculate_monthly_data(df),
-            'monthlyRepeatBreakdown': calculate_monthly_repeat_breakdown(df),
-            'quarterly': calculate_quarterly_data(df),
-            'semiAnnual': calculate_semiannual_performance(df),
-            'semiAnnualBreakdown': calculate_semiannual_repeat_breakdown(df),
-            'yearly': calculate_yearly_data(df),
-            'regions': calculate_regional_data(df),
-            'gender': calculate_gender_performance(df),
-            'products': calculate_product_performance(df),
-            'topShopsByRegion': calculate_top_shops_by_region(df),
-            'ktdaAnalysis': calculate_shop_loyalty_analysis(df, 'Ktda'),
-            'rejectsAnalysis': calculate_shop_loyalty_analysis(df, 'Rejects'),
-            'kisiiAnalysis': calculate_shop_loyalty_analysis(df, 'Kisii'),
-            'hiltonAnalysis': calculate_shop_loyalty_analysis(df, 'Hilton'),
-            'cumulativeRetention': calculate_cumulative_retention(df),
-            'visitIntervals': calculate_visit_interval_distribution(df),
-            'advancedProducts': analyze_combos_and_affinity(df),
-            'regionalProducts': calculate_regional_top_products(df),
-            'monthlyShopOverview': calculate_monthly_shop_overview(df),
-            'growthRates': calculate_growth_rates(df)
-        }
+        result = _compute_all_results(df)
 
         # SPECIAL: Inject CAC for the current filtered period if it's a single month
         if filter_month and filter_month != 'all' and filter_year and filter_year != 'all':
             month_key = f"{filter_year}-{int(filter_month):02d}"
-            # To get an accurate 'New Customers' count for CAC, we need full dataset context
             full_df = get_customer_data()
             full_monthly = calculate_monthly_data(full_df)
             matching = next((m for m in full_monthly if m['period'] == month_key), None)
             if matching and matching.get('marketingSpend', 0) > 0:
-                if 'overview' in overall_results:
-                    overall_results['overview']['cac'] = matching['cac']
-                    overall_results['overview']['marketingSpend'] = matching['marketingSpend']
-                if 'overall' in overall_results:
-                    overall_results['overall']['cac'] = matching['cac']
-                    overall_results['overall']['marketingSpend'] = matching['marketingSpend']
-        
-        data.update(overall_results)
+                if 'overview' in result:
+                    result['overview']['cac'] = matching['cac']
+                    result['overview']['marketingSpend'] = matching['marketingSpend']
+                if 'overall' in result:
+                    result['overall']['cac'] = matching['cac']
+                    result['overall']['marketingSpend'] = matching['marketingSpend']
         
         # Save to computed cache ONLY if this is an unfiltered request
         if not is_filtered:
-            computed_results_cache = data
+            computed_results_cache = result
         
-        data['cache_status'] = {
+        result['cache_status'] = {
             'last_updated': datetime.fromtimestamp(last_fetch_time).strftime('%Y-%m-%d %H:%M:%S') if last_fetch_time else "Unknown",
             'type': 'computed_fresh'
         }
         
-        return jsonify(data)
+        return jsonify(result)
     
     except Exception as e:
         import traceback
         print(f"[ERROR] in /api/data: {str(e)}")
         print(f"[TRACEBACK] {traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
+
+
 
 @app.route('/api/ktda-customer-analysis')
 def get_ktda_customer_analysis():
@@ -2017,3 +1974,23 @@ def upload_data():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5002))
     app.run(host="0.0.0.0", port=port)
+else:
+    # When launched by gunicorn, pre-warm the cache in a background thread.
+    # This means by the time the first browser request arrives, all the heavy
+    # computation is already done and results are served instantly from cache.
+    def _prewarm():
+        try:
+            print("[INFO] Pre-warming data cache in background thread...")
+            with app.app_context():
+                from flask import Request
+                with app.test_request_context('/'):
+                    import importlib, sys
+                    # Directly call the internal compute path
+                    df = get_customer_data()
+                    if df is not None and not df.empty:
+                        _compute_all_results(df)
+                        print("[INFO] Pre-warm complete. Data is ready.")
+        except Exception as e:
+            print(f"[WARNING] Pre-warm failed (non-fatal): {e}")
+
+    threading.Thread(target=_prewarm, daemon=True).start()
