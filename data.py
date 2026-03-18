@@ -1592,6 +1592,62 @@ def index():
     """Render the dashboard"""
     return render_template('index.html')
 
+def _compute_all_results(df):
+    """Compute all dashboard metrics. Called both by /api/data and the startup pre-warmer."""
+    global computed_results_cache
+
+    data = {}
+    shops = {}
+    if 'Shop' in df.columns:
+        available_shops = df['Shop'].unique()
+        for shop in available_shops:
+            if shop in SHOP_REGION_MAP:
+                shop_df = df[df['Shop'] == shop]
+                if not shop_df.empty:
+                    shops[shop] = {
+                        'overall': calculate_overall_performance(shop_df),
+                        'overallBreakdown': calculate_overall_repeat_breakdown(shop_df),
+                        'overview': calculate_overview(shop_df),
+                        'monthly': calculate_monthly_data(shop_df),
+                        'monthlyRepeatBreakdown': calculate_monthly_repeat_breakdown(shop_df),
+                        'quarterly': calculate_quarterly_data(shop_df),
+                        'semiAnnual': calculate_semiannual_performance(shop_df),
+                        'semiAnnualBreakdown': calculate_semiannual_repeat_breakdown(shop_df),
+                        'yearly': calculate_yearly_data(shop_df),
+                        'visitIntervals': calculate_visit_interval_distribution(shop_df),
+                        'growthRates': calculate_growth_rates(shop_df)
+                    }
+    data['shops'] = shops
+
+    overall_results = {
+        'overall': calculate_overall_performance(df),
+        'overallBreakdown': calculate_overall_repeat_breakdown(df),
+        'overview': calculate_overview(df),
+        'monthly': calculate_monthly_data(df),
+        'monthlyRepeatBreakdown': calculate_monthly_repeat_breakdown(df),
+        'quarterly': calculate_quarterly_data(df),
+        'semiAnnual': calculate_semiannual_performance(df),
+        'semiAnnualBreakdown': calculate_semiannual_repeat_breakdown(df),
+        'yearly': calculate_yearly_data(df),
+        'regions': calculate_regional_data(df),
+        'gender': calculate_gender_performance(df),
+        'products': calculate_product_performance(df),
+        'topShopsByRegion': calculate_top_shops_by_region(df),
+        'ktdaAnalysis': calculate_shop_loyalty_analysis(df, 'Ktda'),
+        'rejectsAnalysis': calculate_shop_loyalty_analysis(df, 'Rejects'),
+        'kisiiAnalysis': calculate_shop_loyalty_analysis(df, 'Kisii'),
+        'hiltonAnalysis': calculate_shop_loyalty_analysis(df, 'Hilton'),
+        'cumulativeRetention': calculate_cumulative_retention(df),
+        'visitIntervals': calculate_visit_interval_distribution(df),
+        'advancedProducts': analyze_combos_and_affinity(df),
+        'regionalProducts': calculate_regional_top_products(df),
+        'monthlyShopOverview': calculate_monthly_shop_overview(df),
+        'growthRates': calculate_growth_rates(df)
+    }
+    data.update(overall_results)
+    computed_results_cache = data
+    return data
+
 @app.route('/api/data')
 def get_data():
     """API endpoint to get all dashboard data"""
