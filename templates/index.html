@@ -525,7 +525,6 @@
                             </select>
                         </div>
 
-                        <!-- Cohort Mode -->
                         <div id="cohortMode" style="display: flex; align-items: center; gap: 10px;">
                             <label style="font-weight: bold; color: #2c3e50;">Last Purchase Month:</label>
                             <select id="cohortMonth" onchange="loadInactiveCustomers()"
@@ -549,6 +548,14 @@
                                 <option value="2026" selected>2026</option>
                             </select>
                         </div>
+                        <div style="display: flex; align-items: center; gap: 10px; border-left: 2px solid #edf2f7; padding-left: 15px;">
+                            <label style="font-weight: bold; color: #2c3e50;">Filter by Shop:</label>
+                            <select id="inactiveShopFilter" onchange="loadInactiveCustomers()"
+                                style="padding: 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #fff; cursor: pointer; min-width: 150px;">
+                                <option value="all">All Shops</option>
+                                <!-- Populated dynamically -->
+                            </select>
+                        </div>
                         <div style="color: #64748b; font-size: 0.9em;">
                             <span id="inactiveCountLabel">Looking for customers to bring back...</span>
                         </div>
@@ -565,6 +572,7 @@
                                 <th>Name</th>
                                 <th>Phone</th>
                                 <th>Last Shop</th>
+                                <th>Last Bag Bought</th>
                                 <th>Last Visit</th>
                                 <th>Inactivity</th>
                                 <th>Total Spend</th>
@@ -599,6 +607,16 @@
                             <div class="metric-label">Cross-Shop Customers</div>
                             <div class="metric-value" id="impactExistingCustomers">-</div>
                             <div class="metric-subtext" id="impactExistingPct">-</div>
+                        </div>
+                        <div class="overview-card" style="border-left-color: #f39c12; cursor: pointer; transition: transform 0.2s;" onclick="showLoyaltyList('cross')">
+                            <div class="metric-label" style="display:flex; justify-content:space-between;">Cross Shop Loyalty <span>🔍</span></div>
+                            <div class="metric-value" id="impactCrossLoyalty">-</div>
+                            <div class="metric-subtext" id="impactCrossLoyaltyPct">(Other store visits)</div>
+                        </div>
+                        <div class="overview-card" style="border-left-color: #3f37c9; cursor: pointer; transition: transform 0.2s;" onclick="showLoyaltyList('internal')">
+                            <div class="metric-label" style="display:flex; justify-content:space-between;">Internal Shop History <span>🔍</span></div>
+                            <div class="metric-value" id="impactInternalLoyalty">-</div>
+                            <div class="metric-subtext" id="impactInternalLoyaltyPct">(Identification based strictly on this store)</div>
                         </div>
                         <div class="overview-card revenue">
                             <div class="metric-label">Revenue (Target-Only)</div>
@@ -647,6 +665,24 @@
                                         <th>Region</th>
                                         <th>Customers</th>
                                         <th>%</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Interactive Loyalty Customer List (Hidden by default) -->
+                    <div id="loyaltyDetailsContainer" style="display: none; margin-top: 30px; animation: fadeIn 0.5s;">
+                        <h3 id="loyaltyDetailsTitle" style="color: #2c3e50; border-bottom: 2px solid #3f37c9; padding-bottom: 10px; display:flex; justify-content:space-between;">
+                            Detailed Customer List
+                            <button onclick="document.getElementById('loyaltyDetailsContainer').style.display='none'" style="background:none; border:none; cursor:pointer; font-size:18px;">✖️</button>
+                        </h3>
+                        <div style="background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
+                            <table id="loyaltyDetailsTable">
+                                <thead>
+                                    <tr id="loyaltyDetailsHead">
+                                        <!-- Populated via JS -->
                                     </tr>
                                 </thead>
                                 <tbody></tbody>
@@ -1318,21 +1354,33 @@
 
         function populateShopSelect(data) {
             const shopSelect = document.getElementById('shopSelect');
+            const inactiveShopSelect = document.getElementById('inactiveShopFilter');
             const currentSelected = shopSelect.value;
+            const currentInactiveSelected = inactiveShopSelect.value;
 
             shopSelect.innerHTML = '<option value="all">All Shops</option>';
+            inactiveShopSelect.innerHTML = '<option value="all">All Shops</option>';
+            
             if (data.shops) {
                 Object.keys(data.shops).sort().forEach(shop => {
                     const option = document.createElement('option');
                     option.value = shop;
                     option.textContent = shop;
                     shopSelect.appendChild(option);
+                    
+                    const option2 = document.createElement('option');
+                    option2.value = shop;
+                    option2.textContent = shop;
+                    inactiveShopSelect.appendChild(option2);
                 });
             }
 
             // Restore selection if possible
             if (currentSelected && [...shopSelect.options].some(o => o.value === currentSelected)) {
                 shopSelect.value = currentSelected;
+            }
+            if (currentInactiveSelected && [...inactiveShopSelect.options].some(o => o.value === currentInactiveSelected)) {
+                inactiveShopSelect.value = currentInactiveSelected;
             }
         }
 
@@ -1407,20 +1455,19 @@
 
             // Impact Section toggle
             const impactSection = document.getElementById('shopImpactSection');
-            if (selectedShop === 'Ktda' && globalData.ktdaAnalysis) {
+            if (data && data.loyaltyAnalysis) {
                 impactSection.style.display = 'block';
-                populateShopImpact(globalData.ktdaAnalysis);
-            } else if (selectedShop === 'Kisii' && globalData.kisiiAnalysis) {
-                impactSection.style.display = 'block';
-                populateShopImpact(globalData.kisiiAnalysis);
-            } else if (selectedShop === 'Hilton' && globalData.hiltonAnalysis) {
-                impactSection.style.display = 'block';
-                populateShopImpact(globalData.hiltonAnalysis);
-            } else if (selectedShop === 'Rejects' && globalData.rejectsAnalysis) {
-                impactSection.style.display = 'block';
-                populateShopImpact(globalData.rejectsAnalysis);
-            } else {
+                populateShopImpact(data.loyaltyAnalysis);
+            } else if (selectedShop === 'all') {
                 impactSection.style.display = 'none';
+            } else {
+                // If it's a specific shop but no analysis is yet cached
+                impactSection.style.display = 'block';
+                document.getElementById('impactTitle').textContent = `🏢 ${selectedShop} Impact & Loyalty Analysis`;
+                // Show 'Calculating...' instead of blanks
+                ['impactTotalCustomers', 'impactNewCustomers', 'impactExistingCustomers', 'impactCrossLoyalty', 'impactInternalLoyalty'].forEach(id => {
+                    document.getElementById(id).textContent = 'Calculating...';
+                });
             }
 
             // Tables
@@ -1484,6 +1531,13 @@
             document.getElementById('impactNewPct').textContent = analysis.newCustomerPercentage + '% Target-Only';
             document.getElementById('impactExistingCustomers').textContent = analysis.existingCustomers.toLocaleString();
             document.getElementById('impactExistingPct').textContent = analysis.existingCustomerPercentage + '% Cross-Shop';
+            
+            // New loyalty metrics
+            document.getElementById('impactCrossLoyalty').textContent = (analysis.crossShopLoyaltyCount || 0).toLocaleString();
+            document.getElementById('impactCrossLoyaltyPct').textContent = (analysis.crossShopLoyaltyPercentage || 0) + '% visited other stores';
+            document.getElementById('impactInternalLoyalty').textContent = (analysis.internalRepeatCount || 0).toLocaleString();
+            document.getElementById('impactInternalLoyaltyPct').textContent = (analysis.internalRepeatPercentage || 0) + '% repeat identifying with this store';
+
             document.getElementById('impactRevenueNew').textContent = 'Ksh ' + analysis.revenueFromNew.toLocaleString();
             document.getElementById('impactRevenueExisting').textContent = 'Ksh ' + analysis.revenueFromExisting.toLocaleString();
 
@@ -1528,6 +1582,48 @@
 
             // Update Impact Charts
             updateImpactCharts(analysis);
+
+            // Store analysis for interaction
+            currentShopImpactData = analysis;
+        }
+
+        let currentShopImpactData = null;
+        function showLoyaltyList(type) {
+            if (!currentShopImpactData) return;
+
+            const container = document.getElementById('loyaltyDetailsContainer');
+            const title = document.getElementById('loyaltyDetailsTitle');
+            const thead = document.getElementById('loyaltyDetailsHead');
+            const tbody = document.getElementById('loyaltyDetailsTable').querySelector('tbody');
+
+            container.style.display = 'block';
+            tbody.innerHTML = '';
+
+            if (type === 'internal') {
+                title.firstChild.textContent = `📋 ${currentShopImpactData.targetShop} - Internal Loyalists (Repeat Visits)`;
+                thead.innerHTML = '<th>Customer ID</th><th>Visits at this Shop</th><th>Total Spend here</th><th>Last Visit</th>';
+                
+                const customers = currentShopImpactData.internalLoyaltyDetails || [];
+                customers.forEach(cust => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td>${cust.customerId}</td><td>${cust.visits} visits</td><td>Ksh ${cust.totalSpend.toLocaleString()}</td><td>${cust.lastVisit}</td>`;
+                    tbody.appendChild(tr);
+                });
+            } else {
+                title.firstChild.textContent = `🌍 ${currentShopImpactData.targetShop} - Cross-Shop Network (Customer Behavior)`;
+                thead.innerHTML = '<th>Customer ID</th><th>Other Shops Visited</th><th>Spend at ${currentShopImpactData.targetShop}</th><th>Last Visit here</th>';
+                
+                const customers = currentShopImpactData.crossLoyaltyDetails || [];
+                customers.forEach(cust => {
+                    const tr = document.createElement('tr');
+                    const otherShopsHtml = cust.otherShops.map(s => `<span class="status-badge warning" style="margin-right:5px; font-size:0.8em;">${s}</span>`).join('');
+                    tr.innerHTML = `<td>${cust.customerId}</td><td>${otherShopsHtml}</td><td>Ksh ${cust.totalSpendAtTarget.toLocaleString()}</td><td>${cust.lastVisitAtTarget}</td>`;
+                    tbody.appendChild(tr);
+                });
+            }
+            
+            // Scroll to the list
+            container.scrollIntoView({ behavior: 'smooth' });
         }
 
         function updateImpactCharts(analysis) {
@@ -2429,20 +2525,24 @@
             const mode = document.getElementById('inactivitySelect').value;
             const tbody = document.getElementById('inactiveCustomersTable').querySelector('tbody');
             const countLabel = document.getElementById('inactiveCountLabel');
+            const shop = document.getElementById('inactiveShopFilter').value;
             const exportBtn = document.getElementById('exportInactiveBtn');
 
             let url = `/api/inactive-customers`;
             let exportUrl = `/api/export/inactive-customers`;
 
+            url += `?shop=${encodeURIComponent(shop)}`;
+            exportUrl += `?shop=${encodeURIComponent(shop)}`;
+
             if (mode === 'threshold') {
                 const days = document.getElementById('inactivityDays').value;
-                url += `?days=${days}`;
-                exportUrl += `?days=${days}`;
+                url += `&days=${days}`;
+                exportUrl += `&days=${days}`;
             } else {
                 const month = document.getElementById('cohortMonth').value;
                 const year = document.getElementById('cohortYear').value;
-                url += `?month=${month}&year=${year}`;
-                exportUrl += `?month=${month}&year=${year}`;
+                url += `&month=${month}&year=${year}`;
+                exportUrl += `&month=${month}&year=${year}`;
             }
 
             // Update export link
@@ -2469,6 +2569,7 @@
                         <td style="font-weight:bold;">${cust.firstName}</td>
                         <td>${cust.phone}</td>
                         <td><span class="status-badge" style="background:#f1f5f9; color:#475569; border:1px solid #e2e8f0;">${cust.lastShop}</span></td>
+                        <td><span style="font-size: 0.9em; color:#2c3e50;">${cust.lastProduct || '-'}</span></td>
                         <td>${cust.lastPurchaseDate}</td>
                         <td style="color:#e11d48; font-weight:bold;">${cust.daysInactive}d gone</td>
                         <td>Ksh ${Math.round(cust.totalSpend).toLocaleString()}</td>

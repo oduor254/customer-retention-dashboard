@@ -1328,7 +1328,7 @@ def calculate_shop_loyalty_analysis(df, target_shop, full_df=None):
         new_ids = is_new[is_new].index
         existing_ids = is_new[~is_new].index
         
-        # 4. Details for New Customers
+        # 4. Details for New Customers (Target-Only)
         new_df = customer_df[customer_df['Customer_ID'].isin(new_ids)]
         new_stats = new_df.groupby('Customer_ID').agg(
             totalPurchases=('Price', 'count'),
@@ -1340,7 +1340,6 @@ def calculate_shop_loyalty_analysis(df, target_shop, full_df=None):
         existing_df = customer_df[customer_df['Customer_ID'].isin(existing_ids)]
         
         # Find other shops visited by these customers
-        # Get all (Customer, Shop) pairs where Shop != target
         other_visits = existing_df[existing_df['Shop'] != target_shop][['Customer_ID', 'Shop']].drop_duplicates()
         source_shop_counts = other_visits['Shop'].value_counts()
         
@@ -1363,31 +1362,46 @@ def calculate_shop_loyalty_analysis(df, target_shop, full_df=None):
                           'percentage': round((c/max(1, len(existing_ids))*100), 2)} 
                           for r, c in source_region_counts.items()]
         
-        # Prepare sample details (top 10 by revenue for new, random/first 10 for existing)
-        new_details = []
-        for _, row in new_stats.sort_values('totalRevenue', ascending=False).head(10).iterrows():
-            new_details.append({
+        # 7. Internal loyalty (Repeat visitors strictly to THIS shop)
+        # Identify customers with >= 2 visits strictly at this shop
+        target_visits = customer_df[customer_df['Shop'] == target_shop].groupby('Customer_ID')['Date'].dt.date.nunique()
+        internal_repeat_ids = target_visits[target_visits >= 2].index
+        internal_repeat_count = len(internal_repeat_ids)
+        internal_repeat_pct = round((internal_repeat_count / len(target_customer_ids) * 100), 2) if len(target_customer_ids) > 0 else 0
+
+        # Detailed list for Internal Repeat
+        internal_repeat_df = customer_df[customer_df['Customer_ID'].isin(internal_repeat_ids)]
+        internal_repeat_stats = internal_repeat_df[internal_repeat_df['Shop'] == target_shop].groupby('Customer_ID').agg(
+            visits=('Date', 'nunique'),
+            totalSpend=('Price', 'sum'),
+            lastVisit=('Date', 'max')
+        ).sort_values('totalSpend', ascending=False).head(50).reset_index()
+
+        internal_loyalty_details = []
+        for _, row in internal_repeat_stats.iterrows():
+            internal_loyalty_details.append({
                 'customerId': row['Customer_ID'],
-                'totalPurchases': int(row['totalPurchases']),
-                'totalRevenue': round(float(row['totalRevenue']), 2),
-                'firstPurchaseDate': row['firstPurchaseDate'].strftime('%Y-%m-%d') if pd.notna(row['firstPurchaseDate']) else 'N/A'
+                'visits': int(row['visits']),
+                'totalSpend': round(float(row['totalSpend']), 2),
+                'lastVisit': row['lastVisit'].strftime('%Y-%m-%d')
             })
-            
-        existing_details = []
-        # Get unique shops visited per existing customer (other than target)
-        other_shops_per_cust = other_visits.groupby('Customer_ID')['Shop'].apply(list)
-        
-        for cid in existing_ids[:10]:
-            target_rev = float(target_rev_existing.get(cid, 0))
-            first_shop = first_visits.loc[cid, 'Shop']
+
+        # Detailed list for Cross-Shop Loyalty
+        cross_shop_stats = existing_df[existing_df['Shop'] == target_shop].groupby('Customer_ID').agg(
+            totalSpendAtTarget=('Price', 'sum'),
+            lastVisitAtTarget=('Date', 'max')
+        ).sort_values('totalSpendAtTarget', ascending=False).head(50)
+
+        cross_loyalty_details = []
+        for cid, row in cross_shop_stats.iterrows():
             other_s = other_shops_per_cust.get(cid, [])
-            existing_details.append({
+            cross_loyalty_details.append({
                 'customerId': cid,
-                'otherShops': other_s,
-                'firstShopVisited': first_shop,
-                'targetRevenue': round(target_rev, 2)
+                'otherShops': list(other_s),
+                'totalSpendAtTarget': round(float(row['totalSpendAtTarget']), 2),
+                'lastVisitAtTarget': row['lastVisitAtTarget'].strftime('%Y-%m-%d')
             })
-        
+
         return {
             'targetShop': target_shop,
             'totalCustomers': int(len(target_customer_ids)),
@@ -1395,12 +1409,21 @@ def calculate_shop_loyalty_analysis(df, target_shop, full_df=None):
             'newCustomerPercentage': round((len(new_ids)/len(target_customer_ids)*100), 2) if len(target_customer_ids) > 0 else 0,
             'existingCustomers': int(len(existing_ids)),
             'existingCustomerPercentage': round((len(existing_ids)/len(target_customer_ids)*100), 2) if len(target_customer_ids) > 0 else 0,
+            
+            # New specific metrics requested
+            'internalRepeatCount': int(internal_repeat_count),
+            'internalRepeatPercentage': internal_repeat_pct,
+            'crossShopLoyaltyCount': int(len(existing_ids)),
+            'crossShopLoyaltyPercentage': round((len(existing_ids)/len(target_customer_ids)*100), 2) if len(target_customer_ids) > 0 else 0,
+            
             'revenueFromNew': round(float(new_stats['totalRevenue'].sum()), 2) if not new_stats.empty else 0,
             'revenueFromExisting': round(float(target_rev_existing.sum()), 2) if not target_rev_existing.empty else 0,
             'sourceShops': source_shops,
             'sourceRegions': source_regions,
-            'newCustomerDetails': new_details,
-            'existingCustomerDetails': existing_details,
+            
+            # Interactive details
+            'internalLoyaltyDetails': internal_loyalty_details,
+            'crossLoyaltyDetails': cross_loyalty_details,
             'monthlyTrends': calculate_monthly_loyalty_trends(df, target_shop)
         }
     except Exception as e:
@@ -1408,6 +1431,56 @@ def calculate_shop_loyalty_analysis(df, target_shop, full_df=None):
         print(f"[ERROR] In loyalty analysis for {target_shop}: {e}")
         print(traceback.format_exc())
         return {'error': str(e)}
+
+def calculate_monthly_loyalty_trends(df, target_shop):
+    """Calculate the monthly evolution of loyalty categories for a specific shop using vectorized grouping."""
+    try:
+        if df.empty:
+            return []
+            
+        # 1. Filter to customers who have EVER visited the target shop
+        target_customer_ids = df[df['Shop'] == target_shop]['Customer_ID'].unique()
+        if len(target_customer_ids) == 0:
+            return []
+            
+        target_cust_history = df[df['Customer_ID'].isin(target_customer_ids)].copy()
+        target_cust_history['YearMonth'] = target_cust_history['Date'].dt.to_period('M')
+        
+        # 2. Daily categorization per customer (Target-Only vs Cross-Shop)
+        # Find which shops each customer visited on ANY day
+        cust_profile = target_cust_history.groupby(['YearMonth', 'Customer_ID'])['Shop'].unique()
+        
+        # Categorize
+        # Note: We use the *entire* history to define if someone is Cross-Shop, 
+        # but the user might want "Cross-Shop in that month". 
+        # Let's go with: if they visited OTHER shops in the same month, they are Cross-Shoppers.
+        is_cross = cust_profile.apply(lambda shops: len(shops) > 1 or (len(shops) == 1 and shops[0] != target_shop))
+        
+        # 3. Aggregate by month
+        monthly_stats = is_cross.groupby('YearMonth').agg(['count', 'sum']).reset_index()
+        monthly_stats.columns = ['YearMonth', 'total', 'crossShop']
+        monthly_stats['targetOnly'] = monthly_stats['total'] - monthly_stats['crossShop']
+        
+        # 4. Format
+        results = []
+        for _, row in monthly_stats.sort_values('YearMonth').iterrows():
+            total = int(row['total'])
+            cross = int(row['crossShop'])
+            target = int(row['targetOnly'])
+            results.append({
+                'month': str(row['YearMonth']),
+                'total': total,
+                'targetOnly': target,
+                'targetOnlyPct': round((target/total*100), 1) if total > 0 else 0,
+                'crossShop': cross,
+                'crossShopPct': round((cross/total*100), 1) if total > 0 else 0
+            })
+            
+        # Return only the last 12 months for visual clarity
+        return results[-12:]
+    except Exception as e:
+        print(f"[ERROR] calculate_monthly_loyalty_trends for {target_shop}: {e}")
+        return []
 
         return {'error': str(e)}
 
@@ -1474,7 +1547,7 @@ def calculate_monthly_shop_overview(df):
         print(f"[ERROR] Monthly Shop Overview: {str(e)}")
         return empty_res
 
-def calculate_inactive_customers(df, days_threshold=30, last_month=None, last_year=None):
+def calculate_inactive_customers(df, days_threshold=30, last_month=None, last_year=None, shop_filter=None):
     """Identify customers who haven't made a purchase within the threshold days.
     Uses the latest date in the entire dataset as the reference point for 'today'.
     """
@@ -1482,55 +1555,68 @@ def calculate_inactive_customers(df, days_threshold=30, last_month=None, last_ye
         if df.empty:
             return []
             
-        # 1. Get latest date in dataset
+        # 1. Reference date is ALWAYS global max date
         reference_date = df['Date'].max()
         
-        # 2. Get last purchase date, first name, phone, and total spend per customer
+        # 2. Get the VERY latest visit for EVERY customer across EVERY shop
+        df_sorted = df.sort_values('Date')
+        latest_ever = df_sorted.groupby('Customer_ID').tail(1).copy()
+        
+        # 3. Combine with stats
         cust_stats = df.groupby('Customer_ID').agg(
-            lastPurchaseDate=('Date', 'max'),
-            firstName=('First Name', 'first'),
-            phone=('Phone', 'first'),
-            gender=('Gender', 'first'),
             totalSpend=('Price', 'sum'),
-            totalVisits=('Date', 'nunique'),
-            lastShop=('Shop', 'last')
+            totalVisits=('Date', 'nunique')
         ).reset_index()
         
-        # 3. Calculate inactivity period
-        cust_stats['daysInactive'] = (reference_date - cust_stats['lastPurchaseDate']).dt.days
+        # Merge latest info
+        # Note: latest_ever already has Customer_ID, Date, Shop, Product, First Name, Phone, Gender
+        merged = latest_ever.merge(cust_stats, on='Customer_ID')
         
-        # 4. Filter inactive logic
+        # 4. Calculate inactivity period
+        merged['daysInactive'] = (reference_date - merged['Date']).dt.days
+        
+        # 5. Apply filters
+        # Shop Filter: Usually means "People whose LAST visit was at this shop"
+        if shop_filter and shop_filter != 'all':
+            merged = merged[merged['Shop'] == shop_filter]
+            
         if last_month and last_year and last_month != 'all' and last_year != 'all':
             # Specific cohort: people whose last purchase was exactly in this month/year
-            inactive = cust_stats[
-                (cust_stats['lastPurchaseDate'].dt.month == int(last_month)) &
-                (cust_stats['lastPurchaseDate'].dt.year == int(last_year))
-            ].copy()
+            merged = merged[
+                (merged['Date'].dt.month == int(last_month)) &
+                (merged['Date'].dt.year == int(last_year))
+            ]
         else:
             # Default: anyone who hasn't shopped for X days
-            inactive = cust_stats[cust_stats['daysInactive'] >= days_threshold].copy()
+            merged = merged[merged['daysInactive'] >= days_threshold]
+            
+        if merged.empty:
+            return []
         
-        # 5. Sort by spend then days inactive
-        inactive = inactive.sort_values(by=['totalSpend', 'daysInactive'], ascending=[False, False])
+        # 6. Sort by spend
+        merged = merged.sort_values(by='totalSpend', ascending=False)
         
-        # 6. Format results
+        # 7. Format results
         results = []
-        for _, row in inactive.iterrows():
+        for _, row in merged.iterrows():
             results.append({
                 'customerId': row['Customer_ID'],
-                'firstName': str(row['firstName']),
-                'phone': str(row['phone']),
-                'gender': str(row['gender']),
+                'firstName': str(row['First Name']),
+                'phone': str(row['Phone']),
+                'gender': str(row['Gender']),
                 'totalSpend': round(float(row['totalSpend']), 2),
                 'totalVisits': int(row['totalVisits']),
-                'lastPurchaseDate': row['lastPurchaseDate'].strftime('%Y-%m-%d'),
+                'lastPurchaseDate': row['Date'].strftime('%Y-%m-%d'),
                 'daysInactive': int(row['daysInactive']),
-                'lastShop': str(row['lastShop'])
+                'lastShop': str(row['Shop']),
+                'lastProduct': str(row['Product'])
             })
             
         return results
     except Exception as e:
+        import traceback
         print(f"[ERROR] calculate_inactive_customers: {str(e)}")
+        print(traceback.format_exc())
         return []
 
 def calculate_growth_rates(df):
@@ -1614,8 +1700,11 @@ def _compute_all_results(df):
         def process_shop_data(shop):
             try:
                 shop_df = df[df['Shop'] == shop]
-                if shop_df.empty: return shop, None
-                return shop, {
+                if shop_df.empty:
+                    return shop, None
+                    
+                # Store core metrics
+                shop_results = {
                     'overall': calculate_overall_performance(shop_df),
                     'overallBreakdown': calculate_overall_repeat_breakdown(shop_df),
                     'overview': calculate_overview(shop_df),
@@ -1626,8 +1715,10 @@ def _compute_all_results(df):
                     'semiAnnualBreakdown': calculate_semiannual_repeat_breakdown(shop_df),
                     'yearly': calculate_yearly_data(shop_df),
                     'visitIntervals': calculate_visit_interval_distribution(shop_df),
-                    'growthRates': calculate_growth_rates(shop_df)
+                    'growthRates': calculate_growth_rates(shop_df),
+                    'loyaltyAnalysis': calculate_shop_loyalty_analysis(df, shop) # Use full df for loyalty analysis
                 }
+                return shop, shop_results
             except Exception as e:
                 print(f"[ERROR] processing shop {shop}: {e}")
                 return shop, None
@@ -1656,10 +1747,6 @@ def _compute_all_results(df):
         'gender': calculate_gender_performance(df),
         'products': calculate_product_performance(df),
         'topShopsByRegion': calculate_top_shops_by_region(df),
-        'ktdaAnalysis': calculate_shop_loyalty_analysis(df, 'Ktda'),
-        'rejectsAnalysis': calculate_shop_loyalty_analysis(df, 'Rejects'),
-        'kisiiAnalysis': calculate_shop_loyalty_analysis(df, 'Kisii'),
-        'hiltonAnalysis': calculate_shop_loyalty_analysis(df, 'Hilton'),
         'cumulativeRetention': calculate_cumulative_retention(df),
         'visitIntervals': calculate_visit_interval_distribution(df),
         'advancedProducts': analyze_combos_and_affinity(df),
@@ -1778,33 +1865,41 @@ def get_ktda_customer_analysis():
 
 @app.route('/api/inactive-customers')
 def get_inactive_customers():
-    """API endpoint to get list of inactive customers based on threshold or cohort month"""
+    """API endpoint for inactive customers list with optional month/year cohort and shop filter"""
     try:
+        df = get_data_from_cache()
+        if df is None:
+            return jsonify([])
+            
         days = request.args.get('days', 30, type=int)
-        last_month = request.args.get('month')
-        last_year = request.args.get('year')
+        month = request.args.get('month', None)
+        year = request.args.get('year', None)
+        shop = request.args.get('shop', None)
         
-        df = get_customer_data()
-        inactive = calculate_inactive_customers(df, days, last_month, last_year)
+        inactive = calculate_inactive_customers(df, days, month, year, shop)
         return jsonify(inactive)
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        print(f"[ERROR] API inactive-customers: {str(e)}")
+        return jsonify([])
 
 @app.route('/api/export/inactive-customers')
 def export_inactive_customers():
-    """Export inactive customers as CSV"""
+    """Export inactive customers to CSV with optional cohort and shop filter"""
     try:
         from flask import Response
+        df = get_data_from_cache()
+        if df is None:
+            return "No data found", 404
+            
         days = request.args.get('days', 30, type=int)
-        last_month = request.args.get('month')
-        last_year = request.args.get('year')
+        month = request.args.get('month', None)
+        year = request.args.get('year', None)
+        shop = request.args.get('shop', None)
         
-        df = get_customer_data()
-        inactive_list = calculate_inactive_customers(df, days, last_month, last_year)
+        inactive_list = calculate_inactive_customers(df, days, month, year, shop)
         
         if not inactive_list:
-             return Response("First Name,Phone,Gender,Last Purchase,Days Inactive,Total Spend,Total Visits,Last Shop\n", 
-                            mimetype='text/csv')
+            return "No inactive customers found", 404
         
         export_df = pd.DataFrame(inactive_list)
         # Rename for export
@@ -1816,11 +1911,12 @@ def export_inactive_customers():
             'daysInactive': 'Days Inactive',
             'totalSpend': 'Total Spend',
             'totalVisits': 'Total Visits',
-            'lastShop': 'Last Shop'
+            'lastShop': 'Last Shop',
+            'lastProduct': 'Last Bag Bought'
         })
         
         # Reorder
-        cols = ['First Name', 'Phone', 'Gender', 'Last Purchase', 'Days Inactive', 'Total Spend', 'Total Visits', 'Last Shop']
+        cols = ['First Name', 'Phone', 'Gender', 'Last Purchase', 'Days Inactive', 'Total Spend', 'Total Visits', 'Last Shop', 'Last Bag Bought']
         export_df = export_df[cols]
         
         csv_output = export_df.to_csv(index=False)
