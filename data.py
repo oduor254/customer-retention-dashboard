@@ -12,6 +12,8 @@ import requests
 import io
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
+import concurrent.futures
 
 app = Flask(__name__)
 
@@ -604,22 +606,22 @@ def calculate_overall_repeat_breakdown(df):
     except Exception as e:
         raise Exception(f"Error calculating overall repeat breakdown: {str(e)}")
 
-
 def _calculate_trend_data(df_copy, period_column):
     """Generic function to calculate period-over-period trend data (Monthly, Quarterly, Semi-Annual, etc)"""
     try:
-        periods = sorted(df_copy[period_column].unique())
-        
         results = []
         all_seen_so_far = set()
         prev_period_df = None
         prev_result = None
         
-        customer_min_date = {}
-        customer_max_date = {}
+        # Pre-calculate min/max dates for vectorized lifespan
+        customer_min_date = pd.Series(dtype='datetime64[ns]')
+        customer_max_date = pd.Series(dtype='datetime64[ns]')
         
-        for period in periods:
-            period_df = df_copy[df_copy[period_column] == period]
+        # Optimize: GroupBy is much faster than manual filtering in a loop
+        for period, period_df in df_copy.groupby(period_column, sort=True):
+            # Get unique customers and ensure no NaN/Null values crash calculations
+            if period_df.empty: continue
             # Get unique customers and ensure no NaN/Null values crash calculations
             current_customers = {cid for cid in period_df['Customer_ID'].unique() if pd.notna(cid)}
             current_count = len(current_customers)
@@ -657,18 +659,22 @@ def _calculate_trend_data(df_copy, period_column):
             total_revenue = period_df['Price'].sum()
             avg_spend = total_revenue / current_count if current_count > 0 else 0
             
-            # 6. Average Lifespan (Cumulative up to this period)
-            period_dates = period_df.groupby('Customer_ID')['Date'].agg(['min', 'max'])
-            for cid, row in period_dates.iterrows():
-                if cid not in customer_min_date:
-                    customer_min_date[cid] = row['min']
-                # Update max date if this row's latest date is newer
-                if cid not in customer_max_date or row['max'] > customer_max_date[cid]:
-                    customer_max_date[cid] = row['max']
-                    
-            lifespans = [(customer_max_date[cid] - customer_min_date[cid]).days for cid in customer_max_date]
-            repeat_lifespans = [l for l in lifespans if l > 0]
-            avg_lifespan = sum(repeat_lifespans) / len(repeat_lifespans) if repeat_lifespans else 0
+            # 6. Average Lifespan (Cumulative Tracking)
+            # Efficiently update min/max dates for all customers in this period
+            item_stats = period_df.groupby('Customer_ID')['Date'].agg(['min', 'max'])
+            
+            # Combine current stats with historical - much faster than iteration/dicts
+            if customer_min_date.empty:
+                customer_min_date = item_stats['min']
+                customer_max_date = item_stats['max']
+            else:
+                customer_min_date = customer_min_date.combine(item_stats['min'], min, fill_value=np.nan)
+                customer_max_date = customer_max_date.combine(item_stats['max'], max, fill_value=np.nan)
+                
+            # Vectorized lifespan calculation
+            lifespan_days = (customer_max_date - customer_min_date).dt.days
+            repeat_lifespans = lifespan_days[lifespan_days > 0]
+            avg_lifespan = float(repeat_lifespans.mean()) if not repeat_lifespans.empty else 0
             
             # Extract Revenue for backward compatibility with semi-annual logic
             repeat_customer_ids = visit_days[visit_days > 1].index
@@ -735,12 +741,21 @@ def _calculate_trend_data(df_copy, period_column):
     except Exception as e:
         raise Exception(f"Error calculating trend data: {str(e)}")
 
+def _prepare_working_df(df):
+    """Sort and add all necessary temporal columns once to avoid redundant expensive calculations."""
+    df_copy = df.copy().sort_values('Date')
+    df_copy['Visit_Date'] = df_copy['Date'].dt.date
+    df_copy['YearMonth'] = df_copy['Date'].dt.to_period('M')
+    df_copy['YearQuarter'] = df_copy['Date'].dt.to_period('Q')
+    df_copy['YearHalf'] = df_copy['Date'].dt.year.astype(str) + '-H' + (df_copy['Date'].dt.month.le(6).map({True: '1', False: '2'}))
+    df_copy['Year'] = df_copy['Date'].dt.year
+    return df_copy
+
 def calculate_monthly_data(df):
-    """Calculate month-to-month metrics with MoM growth and lifecycle stats"""
+    """Calculate month-to-month metrics using pre-prepared df"""
     try:
-        df_copy = df.copy()
-        df_copy['YearMonth'] = df_copy['Date'].dt.to_period('M')
-        return _calculate_trend_data(df_copy, 'YearMonth')
+        # Assumes df already has YearMonth
+        return _calculate_trend_data(df, 'YearMonth')
     except Exception as e:
         raise Exception(f"Error calculating monthly data: {str(e)}")
 
@@ -819,19 +834,18 @@ def calculate_cumulative_retention(df, start_date='2025-04-01'):
         return []
 
 def calculate_quarterly_data(df):
-    """Calculate quarterly metrics"""
+    """Calculate quarterly metrics using pre-prepared df"""
     try:
-        df_copy = df.copy()
-        df_copy['YearQuarter'] = df_copy['Date'].dt.to_period('Q')
-        return _calculate_trend_data(df_copy, 'YearQuarter')
+        # Assumes df already has YearQuarter
+        return _calculate_trend_data(df, 'YearQuarter')
     except Exception as e:
         raise Exception(f"Error calculating quarterly data: {str(e)}")
 
 def calculate_overall_performance(df):
-    """Calculate overall performance metrics for the entire year"""
+    """Calculate overall performance metrics for the entire data period"""
     try:
-        df_copy = df.copy()
-        df_copy['Visit_Date'] = df_copy['Date'].dt.date
+        # Assumes df already has Visit_Date
+        df_copy = df
         
         # Total metrics
         total_customers = df_copy['Customer_ID'].nunique()
@@ -895,21 +909,18 @@ def calculate_overall_performance(df):
         raise Exception(f"Error calculating overall performance: {str(e)}")
 
 def calculate_semiannual_performance(df):
-    """Calculate semi-annual metrics with revenue breakdown"""
+    """Calculate semi-annual metrics with revenue breakdown using pre-prepared df"""
     try:
-        df_copy = df.copy()
-        df_copy['Half'] = df_copy['Date'].dt.month.apply(lambda x: 'H1' if x <= 6 else 'H2')
-        df_copy['YearHalf'] = df_copy['Date'].dt.year.astype(str) + '-' + df_copy['Half']
-        return _calculate_trend_data(df_copy, 'YearHalf')
+        # Assumes df already has YearHalf
+        return _calculate_trend_data(df, 'YearHalf')
     except Exception as e:
         raise Exception(f"Error calculating semi-annual data: {str(e)}")
 
 def calculate_yearly_data(df):
-    """Calculate yearly metrics"""
+    """Calculate yearly metrics using pre-prepared df"""
     try:
-        df_copy = df.copy()
-        df_copy['Year'] = df_copy['Date'].dt.year.astype(str)
-        return _calculate_trend_data(df_copy, 'Year')
+        # Assumes df already has Year
+        return _calculate_trend_data(df, 'Year')
     except Exception as e:
         raise Exception(f"Error calculating yearly data: {str(e)}")
 
@@ -1595,28 +1606,44 @@ def index():
 def _compute_all_results(df):
     """Compute all dashboard metrics. Called both by /api/data and the startup pre-warmer."""
     global computed_results_cache
-
+    
+    # Pre-sort and add columns once for massive efficiency gain
+    df = _prepare_working_df(df)
+    
     data = {}
     shops = {}
     if 'Shop' in df.columns:
-        available_shops = df['Shop'].unique()
-        for shop in available_shops:
-            if shop in SHOP_REGION_MAP:
+        available_shops = [s for s in df['Shop'].unique() if s in SHOP_REGION_MAP]
+        
+        def process_shop_data(shop):
+            try:
                 shop_df = df[df['Shop'] == shop]
-                if not shop_df.empty:
-                    shops[shop] = {
-                        'overall': calculate_overall_performance(shop_df),
-                        'overallBreakdown': calculate_overall_repeat_breakdown(shop_df),
-                        'overview': calculate_overview(shop_df),
-                        'monthly': calculate_monthly_data(shop_df),
-                        'monthlyRepeatBreakdown': calculate_monthly_repeat_breakdown(shop_df),
-                        'quarterly': calculate_quarterly_data(shop_df),
-                        'semiAnnual': calculate_semiannual_performance(shop_df),
-                        'semiAnnualBreakdown': calculate_semiannual_repeat_breakdown(shop_df),
-                        'yearly': calculate_yearly_data(shop_df),
-                        'visitIntervals': calculate_visit_interval_distribution(shop_df),
-                        'growthRates': calculate_growth_rates(shop_df)
-                    }
+                if shop_df.empty: return shop, None
+                return shop, {
+                    'overall': calculate_overall_performance(shop_df),
+                    'overallBreakdown': calculate_overall_repeat_breakdown(shop_df),
+                    'overview': calculate_overview(shop_df),
+                    'monthly': calculate_monthly_data(shop_df),
+                    'monthlyRepeatBreakdown': calculate_monthly_repeat_breakdown(shop_df),
+                    'quarterly': calculate_quarterly_data(shop_df),
+                    'semiAnnual': calculate_semiannual_performance(shop_df),
+                    'semiAnnualBreakdown': calculate_semiannual_repeat_breakdown(shop_df),
+                    'yearly': calculate_yearly_data(shop_df),
+                    'visitIntervals': calculate_visit_interval_distribution(shop_df),
+                    'growthRates': calculate_growth_rates(shop_df)
+                }
+            except Exception as e:
+                print(f"[ERROR] processing shop {shop}: {e}")
+                return shop, None
+
+        # Process shops in parallel - massive speedup on multicore systems
+        with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
+            future_to_shop = {executor.submit(process_shop_data, shop): shop for shop in available_shops}
+            for future in concurrent.futures.as_completed(future_to_shop):
+                shop, result = future.result()
+                if result:
+                    shops[shop] = result
+                    
     data['shops'] = shops
 
     overall_results = {
