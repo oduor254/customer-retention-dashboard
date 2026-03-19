@@ -664,12 +664,8 @@ def _calculate_trend_data(df_copy, period_column):
             item_stats = period_df.groupby('Customer_ID')['Date'].agg(['min', 'max'])
             
             # Combine current stats with historical - much faster than iteration/dicts
-            if customer_min_date.empty:
-                customer_min_date = item_stats['min']
-                customer_max_date = item_stats['max']
-            else:
-                customer_min_date = customer_min_date.combine(item_stats['min'], min, fill_value=np.nan)
-                customer_max_date = customer_max_date.combine(item_stats['max'], max, fill_value=np.nan)
+            customer_min_date = pd.concat([customer_min_date, item_stats['min']]).groupby(level=0).min()
+            customer_max_date = pd.concat([customer_max_date, item_stats['max']]).groupby(level=0).max()
                 
             # Vectorized lifespan calculation
             lifespan_days = (customer_max_date - customer_min_date).dt.days
