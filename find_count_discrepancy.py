@@ -8,6 +8,12 @@ import certifi
 JSON_FILE_PATH = r'C:\Users\Oduor\Downloads\JSON Files\retention-484110-9e4520124486.json'
 SHEET_NAME = 'Customer Database'
 WORKSHEET_NAME = 'Shops'
+# Optional: Configure the start year for analysis. If not set, include all history.
+DATA_START_YEAR_ENV = os.environ.get("DATA_START_YEAR")
+try:
+    DATA_START_YEAR = int(DATA_START_YEAR_ENV) if DATA_START_YEAR_ENV else None
+except ValueError:
+    DATA_START_YEAR = None
 
 def find_discrepancy():
     # SSL fixes
@@ -35,11 +41,11 @@ def find_discrepancy():
     print(f"Total raw Rejects records: {len(rejects_raw)}")
     print(f"Total unique raw Phones in Rejects: {rejects_raw['Phone'].astype(str).str.strip().nunique()}")
     
-    # Filter for 2025 and NOT organization
-    df_filtered = rejects_raw[
-        (rejects_raw['Female'].astype(str).str.lower().str.strip() != 'organization') & 
-        (rejects_raw['Date'].dt.year >= 2025)
-    ].copy()
+    # Filter out organizations and optionally apply a start year cutoff
+    filters = rejects_raw['Female'].astype(str).str.lower().str.strip() != 'organization'
+    if DATA_START_YEAR is not None:
+        filters = filters & (rejects_raw['Date'].dt.year >= DATA_START_YEAR)
+    df_filtered = rejects_raw[filters].copy()
     
     print(f"Total filtered Rejects records: {len(df_filtered)}")
     print(f"Total unique filtered Phones: {df_filtered['Phone'].astype(str).str.strip().nunique()}")

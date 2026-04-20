@@ -15,13 +15,25 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
 
+from dotenv import load_dotenv
+load_dotenv()
+
 app = Flask(__name__)
 
 # Configuration
-JSON_FILE_PATH = r'C:\Users\Oduor\Downloads\JSON Files\retention-484110-9e4520124486.json'
+# Prefer environment variable (Render/Production), fallback to local file only for development
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
-SHEET_NAME = 'Customer Database'
-WORKSHEET_NAME = 'Shops'
+JSON_FILE_PATH = os.environ.get("JSON_FILE_PATH", r'C:\Users\Oduor\Downloads\JSON Files\retention-484110-9e4520124486.json')
+
+SHEET_NAME = os.environ.get("SHEET_NAME", 'Customer Database')
+WORKSHEET_NAME = os.environ.get("WORKSHEET_NAME", 'Shops')
+
+# Optional: Configure the start year for analysis. If not set, include all history.
+DATA_START_YEAR_ENV = os.environ.get("DATA_START_YEAR")
+try:
+    DATA_START_YEAR = int(DATA_START_YEAR_ENV) if DATA_START_YEAR_ENV else None
+except ValueError:
+    DATA_START_YEAR = None
 
 # Currency conversion rate (USD to KES)
 USD_TO_KES = 1/130
@@ -49,6 +61,7 @@ SHOP_REGION_MAP = {
     'Kakamega': 'Western & Nyanza',
     'Kisumu': 'Western & Nyanza',
     'Kisii': 'Western & Nyanza',
+    'Busia': 'Western & Nyanza',
     'Meru': 'Central Region',
     'Nanyuki': 'Central Region',
     'Thika': 'Central Region',
@@ -193,11 +206,11 @@ def get_customer_data():
         # Convert Date column to datetime
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
         
-        # Filter out organizations and only 2025-2026 data
-        df_filtered = df[
-            (df['Gender'].str.lower().str.strip() != 'organization') & 
-            (df['Date'].dt.year >= 2025)
-        ].copy()
+        # Filter out organizations and optionally apply a start year cutoff
+        filters = df['Gender'].astype(str).str.lower().str.strip() != 'organization'
+        if DATA_START_YEAR is not None:
+            filters = filters & (df['Date'].dt.year >= DATA_START_YEAR)
+        df_filtered = df[filters].copy()
         
         if df_filtered.empty:
             raise ValueError("No data matches the filter criteria after processing")
@@ -693,6 +706,7 @@ def _calculate_trend_data(df_copy, period_column):
                 'growthRate': 0,  # Default for first period
                 'marketingSpend': 0,
                 'cac': 0,
+                'cacOverall': 0,
                 'totalRevenue': round(float(total_revenue), 2),
                 'repeatRevenue': round(float(repeat_revenue), 2),
                 'repeatRevenuePct': round(float(repeat_revenue_pct), 2)
@@ -704,6 +718,7 @@ def _calculate_trend_data(df_copy, period_column):
                 marketing_cost = period_df.groupby(period_df['Date'].dt.date)['MARKETING EXPENSE'].max().sum()
                 result['marketingSpend'] = float(marketing_cost)
                 result['cac'] = round(marketing_cost / new_count, 2) if new_count > 0 else 0
+                result['cacOverall'] = round(marketing_cost / current_count, 2) if current_count > 0 else 0
             
             # Period-over-Period Growth & Comparative Values
             def get_growth(curr, prev):
@@ -745,6 +760,8 @@ def _prepare_working_df(df):
     df_copy['YearQuarter'] = df_copy['Date'].dt.to_period('Q')
     df_copy['YearHalf'] = df_copy['Date'].dt.year.astype(str) + '-H' + (df_copy['Date'].dt.month.le(6).map({True: '1', False: '2'}))
     df_copy['Year'] = df_copy['Date'].dt.year
+    # ISO Week format: YYYY-W##
+    df_copy['YearWeek'] = df_copy['Date'].dt.isocalendar().year.astype(str) + '-W' + df_copy['Date'].dt.isocalendar().week.astype(str).str.zfill(2)
     return df_copy
 
 def calculate_monthly_data(df):
@@ -754,6 +771,23 @@ def calculate_monthly_data(df):
         return _calculate_trend_data(df, 'YearMonth')
     except Exception as e:
         raise Exception(f"Error calculating monthly data: {str(e)}")
+
+
+def calculate_weekly_data(df):
+    """Calculate weekly metrics from week 1 of 2026 to current week"""
+    try:
+        # Filter for data from 2026 onwards
+        df_filtered = df[df['Date'].dt.year >= 2026].copy()
+        
+        if df_filtered.empty:
+            return []
+        
+        # Assumes df already has YearWeek
+        weekly_data = _calculate_trend_data(df_filtered, 'YearWeek')
+        return weekly_data
+    except Exception as e:
+        raise Exception(f"Error calculating weekly data: {str(e)}")
+
 
 
 def calculate_cumulative_retention(df, start_date='2025-04-01'):
@@ -1102,7 +1136,7 @@ def analyze_combos_and_affinity(df):
         if not product_column: return {'combos': [], 'affinity': []}
 
         # 1. Analyze Existing Combos (with '+', 'Buy', 'Combo', 'Bundle')
-        combo_keywords = r'(\+|buy\s+.*get\s+.*|combo|bundle|set)'
+        combo_keywords = r'\+|buy\s+.*get\s+.*|combo|bundle|set'
         combo_mask = df[product_column].astype(str).str.contains(combo_keywords, case=False, regex=True, na=False)
         combos_df = df[combo_mask]
         
@@ -1125,23 +1159,26 @@ def analyze_combos_and_affinity(df):
         # Filter for transactions with > 1 item
         multi_item_txns = transactions[transactions.apply(len) > 1]
         
-        pair_counts = {}
-        triplet_counts = {}
+        from collections import Counter
+        pair_counts = Counter()
+        triplet_counts = Counter()
         import itertools
 
-        for items in multi_item_txns:
+        # Limit to the most recent 15,000 multi-item transactions for performance
+        # on large datasets, while still being representative.
+        recent_txns = multi_item_txns.tail(15000)
+
+        for items in recent_txns:
             # Sort items to ensure (A, B) is same as (B, A)
             sorted_items = sorted([str(i) for i in items])
             
-            # Generate pairs
-            for pair in itertools.combinations(sorted_items, 2):
-                if pair not in pair_counts: pair_counts[pair] = 0
-                pair_counts[pair] += 1
-            
-            # Generate triplets
-            for triplet in itertools.combinations(sorted_items, 3):
-                if triplet not in triplet_counts: triplet_counts[triplet] = 0
-                triplet_counts[triplet] += 1
+            # Generate pairs (Only for reasonably sized baskets to avoid exponential explosion)
+            if len(sorted_items) <= 10:
+                pair_counts.update(itertools.combinations(sorted_items, 2))
+                
+                # Generate triplets
+                if len(sorted_items) <= 6:
+                    triplet_counts.update(itertools.combinations(sorted_items, 3))
         
         # Convert to list and sort
         affinity_results = []
@@ -1297,9 +1334,10 @@ def calculate_monthly_loyalty_trends(df, target_shop):
         print(f"[ERROR] In loyalty trends for {target_shop}: {e}")
         return []
 
-def calculate_shop_loyalty_analysis(df, target_shop, full_df=None):
-    """Classify target shop customers as new (Target-only) or existing (from overall database).
-       Optimized using vectorized operations.
+def calculate_shop_loyalty_analysis(df, target_shop, logic='cross-shop', full_df=None):
+    """Classifies target shop customers as new vs existing based on selected logic.
+       logic='cross-shop': New(Shop-Only) vs Existing(from other stores)
+       logic='internal': New(First visit to shop) vs Existing(Historical visitor)
     """
     try:
         # Use full_df for global context if provided, else use df
@@ -1309,9 +1347,13 @@ def calculate_shop_loyalty_analysis(df, target_shop, full_df=None):
             return {'error': 'Shop column not found', 'totalCustomers': 0}
             
         # 1. Identify all customers who visited the target shop in the CURRENT (filtered) df
-        target_customer_ids = df[df['Shop'] == target_shop]['Customer_ID'].unique()
+        # Case-insensitive lookup to be safe
+        target_customer_ids = df[df['Shop'].str.lower() == target_shop.lower()]['Customer_ID'].unique()
+        actual_shop_name = df[df['Shop'].str.lower() == target_shop.lower()]['Shop'].iloc[0] if len(target_customer_ids) > 0 else target_shop
+        
         if len(target_customer_ids) == 0:
             return {
+                'targetShop': target_shop,
                 'totalCustomers': 0, 'newCustomers': 0, 'existingCustomers': 0,
                 'sourceShops': [], 'sourceRegions': []
             }
@@ -1319,14 +1361,24 @@ def calculate_shop_loyalty_analysis(df, target_shop, full_df=None):
         # 2. Filter main DF to ONLY these customers for faster processing
         customer_df = df[df['Customer_ID'].isin(target_customer_ids)].copy()
         
-        # 3. Pre-calculate metrics per customer using groupby
-        # Find which shops each customer has visited
-        cust_shops = customer_df.groupby('Customer_ID')['Shop'].unique()
-        # Find which customers are "Target Only" (only 1 shop and it's the target)
-        is_new = cust_shops.apply(lambda x: len(x) == 1 and x[0] == target_shop)
+        # 3. Identify New vs Existing based on logic
+        # We check only the relevant customers
+        if logic == 'internal':
+            # NEW if they have only 1 transaction on record (this period) AT THIS SHOP
+            shop_visits = customer_df[customer_df['Shop'].str.lower() == target_shop.lower()].groupby('Customer_ID', sort=False).size()
+            new_ids = shop_visits[shop_visits == 1].index
+            existing_ids = shop_visits[shop_visits > 1].index
+        else:
+            # logic == 'cross-shop'
+            # NEW if only 1 shop total in their history (within the current period)
+            shop_counts = customer_df.groupby('Customer_ID', sort=False)['Shop'].nunique()
+            new_ids = shop_counts[shop_counts == 1].index
+            existing_ids = shop_counts[shop_counts > 1].index
         
-        new_ids = is_new[is_new].index
-        existing_ids = is_new[~is_new].index
+        target_customer_ids = customer_df[customer_df['Shop'].str.lower() == target_shop.lower()]['Customer_ID'].unique()
+        # Ensure we filter IDs specifically to those visiting target_shop
+        new_ids = [cid for cid in new_ids if cid in target_customer_ids]
+        existing_ids = [cid for cid in existing_ids if cid in target_customer_ids]
         
         # 4. Details for New Customers (Target-Only)
         new_df = customer_df[customer_df['Customer_ID'].isin(new_ids)]
@@ -1353,6 +1405,23 @@ def calculate_shop_loyalty_analysis(df, target_shop, full_df=None):
         # First shop visited (absolute first in database)
         first_visits = existing_df.sort_values('Date').groupby('Customer_ID').first()[['Shop']]
         
+        # Calculate Revenue and Repeat metrics specifically for the target shop
+        target_sales = customer_df[customer_df['Shop'].str.lower() == target_shop.lower()]
+        rev_new = target_sales[target_sales['Customer_ID'].isin(new_ids)]['Price'].sum()
+        rev_existing = target_sales[target_sales['Customer_ID'].isin(existing_ids)]['Price'].sum()
+        total_rev = target_sales['Price'].sum()
+
+        # Notice we are calculating repeat rates based strictly on visits to THIS target shop
+        target_sales_dates = target_sales.copy()
+        target_sales_dates['_visit_date'] = target_sales_dates['Date'].dt.date
+        target_visit_counts = target_sales_dates.groupby('Customer_ID')['_visit_date'].nunique()
+        
+        new_repeat_count = sum(target_visit_counts[target_visit_counts.index.isin(new_ids)] > 1)
+        existing_repeat_count = sum(target_visit_counts[target_visit_counts.index.isin(existing_ids)] > 1)
+        overall_repeat_pct = round((new_repeat_count + existing_repeat_count) / max(1, len(target_customer_ids)) * 100, 1)
+        
+        other_shops_per_cust = other_visits.groupby('Customer_ID')['Shop'].apply(list).to_dict()
+
         # 6. Format Results
         source_shops = [{'shop': s, 'customerCount': int(c), 
                         'percentage': round((c/max(1, len(existing_ids))*100), 2)} 
@@ -1363,65 +1432,76 @@ def calculate_shop_loyalty_analysis(df, target_shop, full_df=None):
                           for r, c in source_region_counts.items()]
         
         # 7. Internal loyalty (Repeat visitors strictly to THIS shop)
-        # Identify customers with >= 2 visits strictly at this shop
-        target_visits = customer_df[customer_df['Shop'] == target_shop].groupby('Customer_ID')['Date'].dt.date.nunique()
+        # Identify customers with >= 2 unique visit dates strictly at this shop
+        # Note: .dt must be applied BEFORE groupby, not after
+        _target_shop_df = customer_df[customer_df['Shop'] == target_shop].copy()
+        _target_shop_df['_visit_date'] = _target_shop_df['Date'].dt.date
+        target_visits = _target_shop_df.groupby('Customer_ID')['_visit_date'].nunique()
         internal_repeat_ids = target_visits[target_visits >= 2].index
-        internal_repeat_count = len(internal_repeat_ids)
-        internal_repeat_pct = round((internal_repeat_count / len(target_customer_ids) * 100), 2) if len(target_customer_ids) > 0 else 0
+        source_regions = [
+            {'region': r, 'customerCount': int(c), 'percentage': round(c / max(1, len(existing_ids)) * 100, 1)}
+            for r, c in source_region_counts.items()
+        ]
 
-        # Detailed list for Internal Repeat
-        internal_repeat_df = customer_df[customer_df['Customer_ID'].isin(internal_repeat_ids)]
-        internal_repeat_stats = internal_repeat_df[internal_repeat_df['Shop'] == target_shop].groupby('Customer_ID').agg(
+        # 7. Internal loyalty detail list (top 50 by spend)
+        internal_repeat_stats = _target_shop_df[
+            _target_shop_df['Customer_ID'].isin(internal_repeat_ids)
+        ].groupby('Customer_ID').agg(
             visits=('Date', 'nunique'),
             totalSpend=('Price', 'sum'),
             lastVisit=('Date', 'max')
         ).sort_values('totalSpend', ascending=False).head(50).reset_index()
 
-        internal_loyalty_details = []
-        for _, row in internal_repeat_stats.iterrows():
-            internal_loyalty_details.append({
+        internal_loyalty_details = [
+            {
                 'customerId': row['Customer_ID'],
                 'visits': int(row['visits']),
                 'totalSpend': round(float(row['totalSpend']), 2),
                 'lastVisit': row['lastVisit'].strftime('%Y-%m-%d')
-            })
+            }
+            for _, row in internal_repeat_stats.iterrows()
+        ]
 
-        # Detailed list for Cross-Shop Loyalty
-        cross_shop_stats = existing_df[existing_df['Shop'] == target_shop].groupby('Customer_ID').agg(
+        # 8. Cross-shop loyalty detail list (top 50 by spend)
+        cross_shop_stats = existing_df.groupby('Customer_ID').agg(
             totalSpendAtTarget=('Price', 'sum'),
             lastVisitAtTarget=('Date', 'max')
         ).sort_values('totalSpendAtTarget', ascending=False).head(50)
 
-        cross_loyalty_details = []
-        for cid, row in cross_shop_stats.iterrows():
-            other_s = other_shops_per_cust.get(cid, [])
-            cross_loyalty_details.append({
+        cross_loyalty_details = [
+            {
                 'customerId': cid,
-                'otherShops': list(other_s),
+                'otherShops': other_shops_per_cust.get(cid, []),
                 'totalSpendAtTarget': round(float(row['totalSpendAtTarget']), 2),
                 'lastVisitAtTarget': row['lastVisitAtTarget'].strftime('%Y-%m-%d')
-            })
+            }
+            for cid, row in cross_shop_stats.iterrows()
+        ]
 
         return {
             'targetShop': target_shop,
             'totalCustomers': int(len(target_customer_ids)),
             'newCustomers': int(len(new_ids)),
-            'newCustomerPercentage': round((len(new_ids)/len(target_customer_ids)*100), 2) if len(target_customer_ids) > 0 else 0,
             'existingCustomers': int(len(existing_ids)),
-            'existingCustomerPercentage': round((len(existing_ids)/len(target_customer_ids)*100), 2) if len(target_customer_ids) > 0 else 0,
-            
-            # New specific metrics requested
-            'internalRepeatCount': int(internal_repeat_count),
-            'internalRepeatPercentage': internal_repeat_pct,
-            'crossShopLoyaltyCount': int(len(existing_ids)),
-            'crossShopLoyaltyPercentage': round((len(existing_ids)/len(target_customer_ids)*100), 2) if len(target_customer_ids) > 0 else 0,
-            
-            'revenueFromNew': round(float(new_stats['totalRevenue'].sum()), 2) if not new_stats.empty else 0,
-            'revenueFromExisting': round(float(target_rev_existing.sum()), 2) if not target_rev_existing.empty else 0,
+            'newPct': round(len(new_ids) / len(target_customer_ids) * 100, 1) if len(target_customer_ids) > 0 else 0,
+            'existingPct': round(len(existing_ids) / len(target_customer_ids) * 100, 1) if len(target_customer_ids) > 0 else 0,
+
+            'revenueNew': round(rev_new, 2),
+            'revenueExisting': round(rev_existing, 2),
+            'revenueTotal': round(total_rev, 2),
+            'revenueNewPct': round(rev_new / total_rev * 100, 1) if total_rev > 0 else 0,
+            'revenueExistingPct': round(rev_existing / total_rev * 100, 1) if total_rev > 0 else 0,
+
+            'avgSpendNew': round(rev_new / len(new_ids), 2) if len(new_ids) > 0 else 0,
+            'avgSpendExisting': round(rev_existing / len(existing_ids), 2) if len(existing_ids) > 0 else 0,
+            'avgSpendOverall': round(total_rev / len(target_customer_ids), 2) if len(target_customer_ids) > 0 else 0,
+
+            'repeatRateNew': round(new_repeat_count / len(new_ids) * 100, 1) if len(new_ids) > 0 else 0,
+            'repeatRateExisting': round(existing_repeat_count / len(existing_ids) * 100, 1) if len(existing_ids) > 0 else 0,
+            'repeatRateOverall': overall_repeat_pct,
+
             'sourceShops': source_shops,
             'sourceRegions': source_regions,
-            
-            # Interactive details
             'internalLoyaltyDetails': internal_loyalty_details,
             'crossLoyaltyDetails': cross_loyalty_details,
             'monthlyTrends': calculate_monthly_loyalty_trends(df, target_shop)
@@ -1430,7 +1510,7 @@ def calculate_shop_loyalty_analysis(df, target_shop, full_df=None):
         import traceback
         print(f"[ERROR] In loyalty analysis for {target_shop}: {e}")
         print(traceback.format_exc())
-        return {'error': str(e)}
+        return {'error': str(e), 'totalCustomers': 0}
 
 def calculate_monthly_loyalty_trends(df, target_shop):
     """Calculate the monthly evolution of loyalty categories for a specific shop using vectorized grouping."""
@@ -1460,6 +1540,13 @@ def calculate_monthly_loyalty_trends(df, target_shop):
         monthly_stats = is_cross.groupby('YearMonth').agg(['count', 'sum']).reset_index()
         monthly_stats.columns = ['YearMonth', 'total', 'crossShop']
         monthly_stats['targetOnly'] = monthly_stats['total'] - monthly_stats['crossShop']
+        
+        # 3b. Find the actual start month for this shop to filter out pre-opening months
+        shop_transactions = df[df['Shop'] == target_shop]
+        if shop_transactions.empty:
+            return []
+        first_month = shop_transactions['Date'].dt.to_period('M').min()
+        monthly_stats = monthly_stats[monthly_stats['YearMonth'] >= first_month]
         
         # 4. Format
         results = []
@@ -1685,7 +1772,54 @@ def index():
     """Render the dashboard"""
     return render_template('index.html')
 
-def _compute_all_results(df):
+def calculate_visit_sequence_spend(df):
+    """Optimized calculation of average spend Trajectory up to 5th visit."""
+    try:
+        if df.empty or 'Customer_ID' not in df.columns:
+            return []
+            
+        # Optimization: Only select necessary columns
+        sub_df = df[['Customer_ID', 'Date', 'Price']]
+        
+        # Aggregate daily spend per customer to define a "visit"
+        daily = sub_df.groupby(['Customer_ID', sub_df['Date'].dt.date], sort=False)['Price'].sum().reset_index()
+        
+        # Sort values
+        daily = daily.sort_values(['Customer_ID', 'Date'])
+        
+        # Assign visit numbers
+        daily['vnum'] = daily.groupby('Customer_ID').cumcount() + 1
+        
+        # Filter to 5 visits early
+        daily = daily[daily['vnum'] <= 5]
+        
+        # Calculate cumulative total spend per customer
+        daily['cum_spend'] = daily.groupby('Customer_ID')['Price'].cumsum()
+        
+        # Stats per visit number - Average of the total spent up to that visit
+        stats = daily.groupby('vnum').agg(
+            avg_spend=('Price', 'mean'),
+            avg_cum_spend=('cum_spend', 'mean'),
+            cust_count=('Customer_ID', 'count')
+        ).reset_index()
+        
+        results = []
+        for _, row in stats.iterrows():
+            v = int(row['vnum'])
+            suffix = {1:'st', 2:'nd', 3:'rd'}.get(v, 'th')
+            results.append({
+                'visitOrder': f"{v}{suffix} Visit",
+                'avgSpend': float(row['avg_spend']),
+                'cumulativeAvgSpend': float(row['avg_cum_spend']),
+                'customerCount': int(row['cust_count'])
+            })
+            
+        return results
+    except Exception as e:
+        print(f"[ERROR] calculate_visit_sequence_spend: {str(e)}")
+        return []
+
+def _compute_all_results(df, loyalty_logic='cross-shop'):
     """Compute all dashboard metrics. Called both by /api/data and the startup pre-warmer."""
     global computed_results_cache
     
@@ -1694,6 +1828,10 @@ def _compute_all_results(df):
     
     data = {}
     shops = {}
+    
+    # Priority shops that need full analytics immediately for the Impact Section
+    priority_shops = ['Ktda', 'Kisii', 'Busia']
+    
     if 'Shop' in df.columns:
         available_shops = [s for s in df['Shop'].unique() if s in SHOP_REGION_MAP]
         
@@ -1703,27 +1841,33 @@ def _compute_all_results(df):
                 if shop_df.empty:
                     return shop, None
                     
-                # Store core metrics
+                # Store core metrics - SUMMARY only for non-priority shops to save massive time
+                is_priority = any(p.lower() == shop.lower() for p in priority_shops)
+                
                 shop_results = {
                     'overall': calculate_overall_performance(shop_df),
                     'overallBreakdown': calculate_overall_repeat_breakdown(shop_df),
                     'overview': calculate_overview(shop_df),
                     'monthly': calculate_monthly_data(shop_df),
+                    'weekly': calculate_weekly_data(shop_df),
                     'monthlyRepeatBreakdown': calculate_monthly_repeat_breakdown(shop_df),
                     'quarterly': calculate_quarterly_data(shop_df),
                     'semiAnnual': calculate_semiannual_performance(shop_df),
                     'semiAnnualBreakdown': calculate_semiannual_repeat_breakdown(shop_df),
                     'yearly': calculate_yearly_data(shop_df),
                     'visitIntervals': calculate_visit_interval_distribution(shop_df),
-                    'growthRates': calculate_growth_rates(shop_df),
-                    'loyaltyAnalysis': calculate_shop_loyalty_analysis(df, shop) # Use full df for loyalty analysis
+                    'growthRates': calculate_growth_rates(shop_df)
                 }
+                
+                # Only compute the heavy specialized Loyalty Analysis for priority shops
+                if is_priority:
+                    shop_results['loyaltyAnalysis'] = calculate_shop_loyalty_analysis(df, shop, logic=loyalty_logic)
                 return shop, shop_results
             except Exception as e:
                 print(f"[ERROR] processing shop {shop}: {e}")
                 return shop, None
 
-        # Process shops in parallel - massive speedup on multicore systems
+        # Process shops in parallel
         with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
             future_to_shop = {executor.submit(process_shop_data, shop): shop for shop in available_shops}
             for future in concurrent.futures.as_completed(future_to_shop):
@@ -1733,11 +1877,13 @@ def _compute_all_results(df):
                     
     data['shops'] = shops
 
+    # Compute overall dashboard metrics
     overall_results = {
         'overall': calculate_overall_performance(df),
         'overallBreakdown': calculate_overall_repeat_breakdown(df),
         'overview': calculate_overview(df),
         'monthly': calculate_monthly_data(df),
+        'weekly': calculate_weekly_data(df),
         'monthlyRepeatBreakdown': calculate_monthly_repeat_breakdown(df),
         'quarterly': calculate_quarterly_data(df),
         'semiAnnual': calculate_semiannual_performance(df),
@@ -1752,8 +1898,61 @@ def _compute_all_results(df):
         'advancedProducts': analyze_combos_and_affinity(df),
         'regionalProducts': calculate_regional_top_products(df),
         'monthlyShopOverview': calculate_monthly_shop_overview(df),
-        'growthRates': calculate_growth_rates(df)
+        'growthRates': calculate_growth_rates(df),
+        'visitSequenceSpend': calculate_visit_sequence_spend(df)
     }
+    
+    # REUSE logic already computed in the loop for the special shop analysis keys
+    # to avoid re-running the heavy loyalty analysis another 6 times.
+    for p_shop in priority_shops:
+        # Match case
+        actual_name = next((s for s in shops.keys() if s.lower() == p_shop.lower()), None)
+        if actual_name and 'loyaltyAnalysis' in shops[actual_name]:
+            la = shops[actual_name]['loyaltyAnalysis']
+            data[f'{p_shop.lower()}AnalysisCross'] = la if loyalty_logic == 'cross-shop' else calculate_shop_loyalty_analysis(df, actual_name, logic='cross-shop')
+            data[f'{p_shop.lower()}AnalysisInternal'] = la if loyalty_logic == 'internal' else calculate_shop_loyalty_analysis(df, actual_name, logic='internal')
+        else:
+            # Fallback if the shop wasn't found or loop missed it
+            data[f'{p_shop.lower()}AnalysisCross'] = calculate_shop_loyalty_analysis(df, p_shop, logic='cross-shop')
+            data[f'{p_shop.lower()}AnalysisInternal'] = calculate_shop_loyalty_analysis(df, p_shop, logic='internal')
+
+    # CALCULATE MARKETING HIGHLIGHTS
+    monthly_data = overall_results.get('monthly', [])
+    marketing_highlights = {
+        'totalMarketingSpend': 0,
+        'totalNewCustomers': 0,
+        'overallCAC': 0,
+        'bestAcquisitionMonth': None,
+        'roiLeaderMonth': None,
+        'topEfficiencyMonth': None
+    }
+    
+    if monthly_data:
+        total_spend = sum(m.get('marketingSpend', 0) for m in monthly_data)
+        total_new = sum(m.get('newCustomers', 0) for m in monthly_data)
+        marketing_highlights['totalMarketingSpend'] = round(total_spend, 2)
+        marketing_highlights['totalNewCustomers'] = int(total_new)
+        marketing_highlights['overallCAC'] = round(total_spend / total_new, 2) if total_new > 0 else 0
+        
+        # Monthly leaders
+        best_acq = max(monthly_data, key=lambda x: x.get('newCustomers', 0), default=None)
+        if best_acq: 
+            marketing_highlights['bestAcquisitionMonth'] = f"{best_acq['period']} ({int(best_acq['newCustomers'])} new)"
+            
+        # ROI leader (Revenue / Spend)
+        roi_months = [m for m in monthly_data if m.get('marketingSpend', 0) > 0]
+        if roi_months:
+            best_roi = max(roi_months, key=lambda x: x.get('totalRevenue', 0) / x.get('marketingSpend', 1), default=None)
+            if best_roi:
+                roi_val = round(best_roi['totalRevenue'] / best_roi['marketingSpend'], 2)
+                marketing_highlights['roiLeaderMonth'] = f"{best_roi['period']} ({roi_val}x ROI)"
+            
+            # Top efficiency (Lowest CAC)
+            best_efficiency = min(roi_months, key=lambda x: x.get('cac', 999999), default=None)
+            if best_efficiency:
+                marketing_highlights['topEfficiencyMonth'] = f"{best_efficiency['period']} (CAC: {best_efficiency['cac']})"
+                
+    data['marketingHighlights'] = marketing_highlights
     data.update(overall_results)
     computed_results_cache = data
     return data
@@ -1768,13 +1967,16 @@ def get_data():
     filter_month = request.args.get('month')
     filter_quarter = request.args.get('quarter')
     filter_half = request.args.get('half')
+    filter_week = request.args.get('week')
+    loyalty_logic = request.args.get('loyaltyMode', 'cross-shop')
     
     # Check if any filter is actually applied (not 'all' and not None)
     is_filtered = any([
         filter_year and filter_year != 'all',
         filter_month and filter_month != 'all',
         filter_quarter and filter_quarter != 'all',
-        filter_half and filter_half != 'all'
+        filter_half and filter_half != 'all',
+        filter_week and filter_week != 'all'
     ])
     
     try:
@@ -1783,7 +1985,7 @@ def get_data():
         
         # 2. Apply time filters if provided
         if is_filtered:
-            print(f"[INFO] Applying time filters: year={filter_year}, month={filter_month}, quarter={filter_quarter}")
+            print(f"[INFO] Applying time filters: year={filter_year}, month={filter_month}, quarter={filter_quarter}, week={filter_week}")
             df_work = df.copy()
             
             if filter_year and filter_year != 'all':
@@ -1802,6 +2004,13 @@ def get_data():
                     df_work = df_work[df_work['Date'].dt.month <= 6]
                 else:
                     df_work = df_work[df_work['Date'].dt.month > 6]
+            
+            if filter_week and filter_week != 'all':
+                # Week format is "W##" (e.g., "W01" for week 1)
+                # Add YearWeek column if not present
+                df_work['YearWeek'] = df_work['Date'].dt.isocalendar().year.astype(str) + '-W' + df_work['Date'].dt.isocalendar().week.astype(str).str.zfill(2)
+                week_key = f"{filter_year}-W{filter_week.zfill(2)}"
+                df_work = df_work[df_work['YearWeek'] == week_key]
                 
             df = df_work
         
@@ -1813,9 +2022,9 @@ def get_data():
             }
             return jsonify(computed_results_cache)
             
-        print("[INFO] Calculating metrics...")
+        print(f"[INFO] Calculating metrics (Logic: {loyalty_logic})...")
         
-        result = _compute_all_results(df)
+        result = _compute_all_results(df, loyalty_logic=loyalty_logic)
 
         # SPECIAL: Inject CAC for the current filtered period if it's a single month
         if filter_month and filter_month != 'all' and filter_year and filter_year != 'all':
@@ -1823,6 +2032,20 @@ def get_data():
             full_df = get_customer_data()
             full_monthly = calculate_monthly_data(full_df)
             matching = next((m for m in full_monthly if m['period'] == month_key), None)
+            if matching and matching.get('marketingSpend', 0) > 0:
+                if 'overview' in result:
+                    result['overview']['cac'] = matching['cac']
+                    result['overview']['marketingSpend'] = matching['marketingSpend']
+                if 'overall' in result:
+                    result['overall']['cac'] = matching['cac']
+                    result['overall']['marketingSpend'] = matching['marketingSpend']
+        
+        # SPECIAL: Inject CAC for the current filtered period if it's a single week
+        if filter_week and filter_week != 'all' and filter_year and filter_year != 'all':
+            week_key = f"{filter_year}-W{filter_week.zfill(2)}"
+            full_df = get_customer_data()
+            full_weekly = calculate_weekly_data(full_df)
+            matching = next((w for w in full_weekly if w['period'] == week_key), None)
             if matching and matching.get('marketingSpend', 0) > 0:
                 if 'overview' in result:
                     result['overview']['cac'] = matching['cac']
@@ -1867,7 +2090,7 @@ def get_ktda_customer_analysis():
 def get_inactive_customers():
     """API endpoint for inactive customers list with optional month/year cohort and shop filter"""
     try:
-        df = get_data_from_cache()
+        df = get_customer_data()
         if df is None:
             return jsonify([])
             
@@ -1887,7 +2110,7 @@ def export_inactive_customers():
     """Export inactive customers to CSV with optional cohort and shop filter"""
     try:
         from flask import Response
-        df = get_data_from_cache()
+        df = get_customer_data()
         if df is None:
             return "No data found", 404
             
@@ -2159,8 +2382,7 @@ else:
             with app.app_context():
                 from flask import Request
                 with app.test_request_context('/'):
-                    import importlib, sys
-                    # Directly call the internal compute path
+                        # Directly call the internal compute path
                     df = get_customer_data()
                     if df is not None and not df.empty:
                         _compute_all_results(df)

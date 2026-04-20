@@ -1,0 +1,23 @@
+# Environments
+.env
+
+# Python Clutter
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+.env
+
+# IDEs
+.vscode/
+.idea/
+
+# OS Clutter
+.DS_Store
+Thumbs.db
+
+# Flask/Gunicorn
+*.log
+instance/
+.pytest_cache/
