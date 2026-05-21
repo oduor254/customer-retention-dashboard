@@ -47,6 +47,7 @@ REGION_COLORS = {
     'Rift Valley': '#9b59b6',           # Purple
     'Diaspora': '#1abc9c', 
     'Website': '#27C2F5', 
+    'Rongai': '#27C2F5',
     'Rejects': '#27C2F5',             # Turquoise
 }
 
@@ -72,6 +73,7 @@ SHOP_REGION_MAP = {
     'Tanzania': 'Diaspora',
     'Uganda': 'Diaspora',
     'Website': 'Online',
+    'Rongai': 'Central Region',
 }
 
 # Cache variables
@@ -79,7 +81,7 @@ cached_data = None
 last_fetch_time = None
 computed_results_cache = None  # Store final aggregated JSON results
 CACHE_DURATION = 1800  # Cache for 30 minutes to reduce slow network calls
-CACHE_FILE = 'customer_data_cache.csv'
+CACHE_FILE = '/tmp/customer_data_cache.csv' if os.name != 'nt' else 'customer_data_cache.csv'
 
 
 def get_customer_data():
@@ -97,7 +99,7 @@ def get_customer_data():
     if cached_data is None and os.path.exists(CACHE_FILE):
         try:
             print("[INFO] Loading from persistent cache...")
-            df_persistent = pd.read_csv(CACHE_FILE)
+            df_persistent = pd.read_csv(CACHE_FILE, low_memory=False)
             df_persistent['Date'] = pd.to_datetime(df_persistent['Date'], errors='coerce')
             cached_data = df_persistent
             last_fetch_time = os.path.getmtime(CACHE_FILE)
@@ -285,12 +287,10 @@ def calculate_overview(df):
         one_timer_pct = (one_timers / unique_customers * 100) if unique_customers > 0 else 0
         repeat_pct = (repeat_customers / unique_customers * 100) if unique_customers > 0 else 0
         
-        # Average lifespan (for repeat customers only)
+        # Average lifespan (for repeat customers with visits on different days)
         # Difference between first and last purchase date
         lifespan_df = df_work.groupby('Customer_ID')['Date'].agg(['min', 'max'])
         lifespan_df['lifespan_days'] = (lifespan_df['max'] - lifespan_df['min']).dt.days
-        # Only consider customers with span > 0 (repeat customers basically, or same day repeats)
-        # Better to filter for meaningful lifespan (more than 1 visit day)
         repeat_customers_lifespan = lifespan_df[lifespan_df['lifespan_days'] > 0]
         avg_lifespan = repeat_customers_lifespan['lifespan_days'].mean() if len(repeat_customers_lifespan) > 0 else 0
         
@@ -344,8 +344,8 @@ def calculate_overview(df):
         marketing_cost = 0
         cac = 0
         if 'MARKETING EXPENSE' in df_work.columns:
-            # Aggregate unique daily spends
-            marketing_cost = df_work.groupby(df_work['Date'].dt.date)['MARKETING EXPENSE'].max().sum()
+            # Each row carries its own marketing expense value — sum the full column.
+            marketing_cost = df_work['MARKETING EXPENSE'].sum()
             cac = marketing_cost / unique_customers if unique_customers > 0 else 0
 
         return {
@@ -714,8 +714,8 @@ def _calculate_trend_data(df_copy, period_column):
             
             # 7. CAC Calculation from Sheet Column
             if 'MARKETING EXPENSE' in period_df.columns:
-                # Sum unique daily spends to avoid double counting if spend is recorded on every row
-                marketing_cost = period_df.groupby(period_df['Date'].dt.date)['MARKETING EXPENSE'].max().sum()
+                # Each row carries its own marketing expense value — sum the full column.
+                marketing_cost = period_df['MARKETING EXPENSE'].sum()
                 result['marketingSpend'] = float(marketing_cost)
                 result['cac'] = round(marketing_cost / new_count, 2) if new_count > 0 else 0
                 result['cacOverall'] = round(marketing_cost / current_count, 2) if current_count > 0 else 0
@@ -900,7 +900,7 @@ def calculate_overall_performance(df):
         
         # Average customer metrics
         avg_spend_per_customer = df_copy.groupby('Customer_ID')['Price'].sum().mean()
-        # Average lifespan (for repeat customers only)
+        # Average lifespan (for repeat customers with visits on different days)
         # Difference between first and last purchase date
         lifespan_df = df_copy.groupby('Customer_ID')['Date'].agg(['min', 'max'])
         lifespan_df['lifespan_days'] = (lifespan_df['max'] - lifespan_df['min']).dt.days
@@ -1830,7 +1830,7 @@ def _compute_all_results(df, loyalty_logic='cross-shop'):
     shops = {}
     
     # Priority shops that need full analytics immediately for the Impact Section
-    priority_shops = ['Ktda', 'Kisii', 'Busia']
+    priority_shops = ['Ktda', 'Kisii', 'Busia', 'Rongai']
     
     if 'Shop' in df.columns:
         available_shops = [s for s in df['Shop'].unique() if s in SHOP_REGION_MAP]
