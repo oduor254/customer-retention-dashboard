@@ -23,6 +23,23 @@ app = Flask(__name__)
 # Configuration
 # Prefer environment variable (Render/Production), fallback to local file only for development
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+
+import re as _re
+
+def _parse_service_account_json(raw):
+    """Parse service account JSON, fixing literal newlines Vercel injects into private_key."""
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        # Vercel converts \n escape sequences to literal newlines inside env var values.
+        # This breaks the private_key field. Re-escape newlines only within that value.
+        fixed = _re.sub(
+            r'("private_key"\s*:\s*")(.*?)(")',
+            lambda m: m.group(1) + m.group(2).replace('\n', '\\n') + m.group(3),
+            raw,
+            flags=_re.DOTALL,
+        )
+        return json.loads(fixed)
 JSON_FILE_PATH = os.environ.get("JSON_FILE_PATH", r'C:\Users\Oduor\Downloads\JSON Files\retention-484110-9e4520124486.json')
 
 SHEET_NAME = os.environ.get("SHEET_NAME", 'Customer Database')
@@ -131,7 +148,7 @@ def get_customer_data():
             creds = Credentials.from_service_account_file(JSON_FILE_PATH, scopes=SCOPES)
         elif GOOGLE_SERVICE_ACCOUNT_JSON:
             # Render / cloud deployment
-            creds_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+            creds_info = _parse_service_account_json(GOOGLE_SERVICE_ACCOUNT_JSON)
             creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
         else:
             raise ValueError("No Google credentials found.")
@@ -2321,7 +2338,7 @@ def upload_data():
             creds = Credentials.from_service_account_file(JSON_FILE_PATH, scopes=SCOPES)
         elif GOOGLE_SERVICE_ACCOUNT_JSON:
             # Render / cloud deployment
-            creds_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+            creds_info = _parse_service_account_json(GOOGLE_SERVICE_ACCOUNT_JSON)
             creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
         else:
             raise ValueError("No Google credentials found.")
