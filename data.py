@@ -24,22 +24,18 @@ app = Flask(__name__)
 # Prefer environment variable (Render/Production), fallback to local file only for development
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
 
-import re as _re
+import base64 as _base64
 
 def _parse_service_account_json(raw):
-    """Parse service account JSON, fixing literal newlines Vercel injects into private_key."""
+    """Parse service account credentials from env var.
+    Accepts either plain JSON or a base64-encoded JSON string."""
     try:
+        # Try plain JSON first (legacy)
         return json.loads(raw)
-    except json.JSONDecodeError:
-        # Vercel converts \n escape sequences to literal newlines inside env var values.
-        # This breaks the private_key field. Re-escape newlines only within that value.
-        fixed = _re.sub(
-            r'("private_key"\s*:\s*")(.*?)(")',
-            lambda m: m.group(1) + m.group(2).replace('\n', '\\n') + m.group(3),
-            raw,
-            flags=_re.DOTALL,
-        )
-        return json.loads(fixed)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Fall back to base64-encoded JSON (recommended for Vercel)
+    return json.loads(_base64.b64decode(raw).decode('utf-8'))
 JSON_FILE_PATH = os.environ.get("JSON_FILE_PATH", r'C:\Users\Oduor\Downloads\JSON Files\retention-484110-9e4520124486.json')
 
 SHEET_NAME = os.environ.get("SHEET_NAME", 'Customer Database')
