@@ -682,6 +682,39 @@
                 </div>
             </div>
 
+            <!-- Customer Performance Metrics (special shops: Ktda / Kisii / Busia / Rongai) -->
+            <div id="specialShopsAnalysis" style="display: none; margin: 30px 0;">
+                <h1 style="margin: 0; color: #34495e; font-size: 1.8rem; display: flex; align-items: center; gap: 12px; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; margin-bottom: 20px;">
+                    🔍 <span id="specialShopTitle">Shop</span> — Customer Performance Metrics
+                </h1>
+
+                <div style="background: #f8fafc; padding: 15px 20px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px; display: inline-block;">
+                    <span style="font-weight: bold; color: #2c3e50; margin-right: 15px;">🔍 Filter View:</span>
+                    <label style="cursor: pointer; margin-right: 15px;">
+                        <input type="radio" name="specialShopMode" value="cross" checked onchange="handleSpecialModeChange()" style="margin-right: 5px;"> Cross Shop
+                    </label>
+                    <label style="cursor: pointer;">
+                        <input type="radio" name="specialShopMode" value="internal" onchange="handleSpecialModeChange()" style="margin-right: 5px;"> Internal History
+                    </label>
+                </div>
+
+                <div class="tables-section">
+                    <table id="specialShopTable">
+                        <thead>
+                            <tr>
+                                <th>Metrics</th>
+                                <th id="newHeaderTitle">New Customers</th>
+                                <th id="existingHeaderTitle">Existing / Cross-Shop</th>
+                                <th>Total / Overall</th>
+                            </tr>
+                        </thead>
+                        <tbody id="specialShopTbody">
+                            <!-- Populated via JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
             <!-- Charts Section -->
             <div class="charts-section">
                 <div class="chart-card">
@@ -759,11 +792,8 @@
                             <th>Ret. %</th>
                             <th>Repeat</th>
                             <th>Rep. %</th>
-                            <th>Rep. Growth</th>
                             <th>Avg Spend</th>
-                            <th>Spend Growth</th>
                             <th>Avg Life</th>
-                            <th>Life Growth</th>
                             <th style="background-color: #9b59b6; color: white;">CAC (New)</th>
                             <th style="background-color: #8e44ad; color: white;">CAC (Overall)</th>
                         </tr>
@@ -823,53 +853,9 @@
                 </table>
             </div>
 
-            <!-- Classification Logic Filters -->
-            <div style="background: #f8fafc; padding: 15px 20px; border-radius: 8px; margin: 30px 0 10px; border: 1px solid #e2e8f0; display: flex; align-items: center; gap: 25px;">
-                <span style="font-weight: bold; color: #2c3e50; display: flex; align-items: center; gap: 8px;">
-                    🔍 Classification Logic:
-                </span>
-                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: #2c3e50; font-weight: 500;">
-                    <input type="radio" name="loyaltyMode" value="cross-shop" checked onchange="handleTimeFilterChange()" style="width: 18px; height: 18px;">
-                    Cross-Shop Loyalty <span style="font-weight: normal; color: #7f8c8d; font-size: 0.85rem;">(Identification based on other store visits)</span>
-                </label>
-                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: #2c3e50; font-weight: 500;">
-                    <input type="radio" name="loyaltyMode" value="internal" onchange="handleTimeFilterChange()" style="width: 18px; height: 18px;">
-                    Internal Shop History <span style="font-weight: normal; color: #7f8c8d; font-size: 0.85rem;">(Identification based strictly on this store's visits)</span>
-                </label>
-            </div>
-
-            <!-- Special New Shops Analysis -->
-            <div id="specialShopsAnalysis" style="display: none; margin: 30px 0;">
-                <h1 style="margin: 0; color: #34495e; font-size: 1.8rem; display: flex; align-items: center; gap: 12px; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; margin-bottom: 20px;">
-                    🔍 <span id="specialShopTitle">Shop</span> — Customer Performance Metrics
-                </h1>
-                
-                <div style="background: #f8fafc; padding: 15px 20px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px; display: inline-block;">
-                    <span style="font-weight: bold; color: #2c3e50; margin-right: 15px;">🔍 Filter View:</span>
-                    <label style="cursor: pointer; margin-right: 15px;">
-                        <input type="radio" name="specialShopMode" value="cross" checked onchange="handleSpecialModeChange()" style="margin-right: 5px;"> Cross Shop
-                    </label>
-                    <label style="cursor: pointer;">
-                        <input type="radio" name="specialShopMode" value="internal" onchange="handleSpecialModeChange()" style="margin-right: 5px;"> Internal History
-                    </label>
-                </div>
-
-                <div class="tables-section">
-                    <table id="specialShopTable">
-                        <thead>
-                            <tr>
-                                <th>Metrics</th>
-                                <th id="newHeaderTitle">New Customers</th>
-                                <th id="existingHeaderTitle">Existing / Cross-Shop</th>
-                                <th>Total / Overall</th>
-                            </tr>
-                        </thead>
-                        <tbody id="specialShopTbody">
-                            <!-- Populated via JS -->
-                        </tbody>
-                    </table>
-                </div>
-            </div>
+            <!-- loyaltyMode radio inputs kept hidden for JS to read -->
+            <input type="radio" name="loyaltyMode" value="cross-shop" checked onchange="handleTimeFilterChange()" style="display:none;">
+            <input type="radio" name="loyaltyMode" value="internal" onchange="handleTimeFilterChange()" style="display:none;">
 
             <div class="tables-section global-only-section">
                 <h2>📊 Quarterly Performance</h2>
@@ -1600,6 +1586,13 @@
             }
 
             // Tables
+            // Monthly Performance uses a clean set: no growth sub-columns
+            const monthlyTableFields = [
+                'period', 'totalCustomers', 'newCustomers', 'newPct',
+                'retainedCustomers', 'retentionPct', 'repeatCustomers', 'repeatPct',
+                'avgSpendPerCustomer', 'avgLifespan', 'cac', 'cacOverall'
+            ];
+            // Weekly / Quarterly / Semi-Annual / Yearly keep the full set including growth deltas
             const detailedMonthlyFields = [
                 'period', 'totalCustomers', 'newCustomers', 'newPct',
                 'retainedCustomers', 'retentionPct', 'repeatCustomers', 'repeatPct', 'repeatCustomersTrx', 'repeatPctTrx', 'repeatGrowth',
@@ -1607,8 +1600,8 @@
             ];
             const summaryFields = ['period', 'repeatCustomers', 'avgSpendPerCustomer', 'avgLifespan', 'growthRate'];
 
-            populateTable('monthlyTable', data.monthly, detailedMonthlyFields);
-            if (data.weekly && data.weekly.length > 0) {
+            populateTable('monthlyTable', data.monthly, monthlyTableFields);
+            if (selectedShop === 'all' && data.weekly && data.weekly.length > 0) {
                 populateTable('weeklyTable', data.weekly, detailedMonthlyFields);
                 document.getElementById('weeklyPerformanceSection').style.display = 'block';
             } else {
@@ -1620,7 +1613,7 @@
             
             // Special Shops Table handler
             const specialShopContainer = document.getElementById('specialShopsAnalysis');
-            if (['ktda', 'kisii', 'busia'].includes(selectedShop.toLowerCase())) {
+            if (['ktda', 'kisii', 'busia', 'rongai'].includes(selectedShop.toLowerCase())) {
                 specialShopContainer.style.display = 'block';
                 document.getElementById('specialShopTitle').textContent = selectedShop;
                 handleSpecialModeChange();
