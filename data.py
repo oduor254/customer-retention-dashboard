@@ -233,7 +233,19 @@ def get_customer_data():
         # Process prices
         df_filtered['Price'] = df_filtered['Price'].astype(str).str.replace(r'[^\d.]', '', regex=True)
         df_filtered['Price'] = pd.to_numeric(df_filtered['Price'], errors='coerce')
-        
+
+        # Process Quantity and Total if present
+        if 'Quantity' in df_filtered.columns:
+            df_filtered['Quantity'] = df_filtered['Quantity'].astype(str).str.replace(r'[^\d.]', '', regex=True)
+            df_filtered['Quantity'] = pd.to_numeric(df_filtered['Quantity'], errors='coerce').fillna(1)
+        if 'Total' in df_filtered.columns:
+            df_filtered['Total'] = df_filtered['Total'].astype(str).str.replace(r'[^\d.]', '', regex=True)
+            df_filtered['Total'] = pd.to_numeric(df_filtered['Total'], errors='coerce')
+        else:
+            # Derive Total from Price × Quantity for backwards compatibility
+            qty = df_filtered['Quantity'] if 'Quantity' in df_filtered.columns else 1
+            df_filtered['Total'] = df_filtered['Price'] * qty
+
         # Process Marketing Expense if present
         if 'MARKETING EXPENSE' in df_filtered.columns:
             df_filtered['MARKETING EXPENSE'] = df_filtered['MARKETING EXPENSE'].astype(str).str.replace(r'[^\d.]', '', regex=True)
@@ -272,23 +284,23 @@ def calculate_overview(df):
         # Make a copy to avoid modifying original
         df_work = df.copy()
         
-        # Remove rows with NaN prices
-        df_work = df_work[df_work['Price'].notna()]
-        
+        # Remove rows with NaN totals
+        df_work = df_work[df_work['Total'].notna()]
+
         # Total transactions
         total_transactions = len(df_work)
-        
+
         # Unique customers
         unique_customers = df_work['Customer_ID'].nunique()
-        
+
         # Average spend per visit
         df_work['Visit_Date'] = df_work['Date'].dt.date
-        visit_spending = df_work.groupby(['Customer_ID', 'Visit_Date'])['Price'].sum().reset_index()
-        avg_spend_per_visit = visit_spending['Price'].mean() if len(visit_spending) > 0 else 0
+        visit_spending = df_work.groupby(['Customer_ID', 'Visit_Date'])['Total'].sum().reset_index()
+        avg_spend_per_visit = visit_spending['Total'].mean() if len(visit_spending) > 0 else 0
         total_visits = len(visit_spending)
-        
+
         # Average spend per customer
-        customer_spending = df_work.groupby('Customer_ID')['Price'].sum()
+        customer_spending = df_work.groupby('Customer_ID')['Total'].sum()
         avg_spend_per_customer = customer_spending.mean() if len(customer_spending) > 0 else 0
         
         # Customer purchase frequency - count unique visit days per customer
@@ -337,8 +349,8 @@ def calculate_overview(df):
             avg_cycle = per_customer_avg.mean()
         else:
             avg_cycle = 0
-        
-        total_revenue = df_work['Price'].sum()
+
+        total_revenue = df_work['Total'].sum()
 
         # TWO APPROACHES REPEAT ANALYSIS
         # 1. Transaction-Based: Any customer with > 1 total transaction
@@ -438,7 +450,7 @@ def calculate_retention_repeat(period_df, prev_period_df=None, full_df=None):
         repeat_trx_pct = (repeat_trx_count / current_count * 100) if current_count > 0 else 0
         
         # 3. Avg Spend Per Customer
-        total_revenue = period_df['Price'].sum()
+        total_revenue = period_df['Total'].sum()
         avg_spend = (total_revenue / current_count) if current_count > 0 else 0
 
         # 4. Avg Lifespan (Days) - Historical lifespan for active customers
@@ -508,11 +520,11 @@ def calculate_monthly_repeat_breakdown(df):
             one_timer_pct_month = (one_timers_month / total_customers_month * 100) if total_customers_month > 0 else 0
             
             # Total revenue for the month
-            total_revenue_month = month_df['Price'].sum()
-            
+            total_revenue_month = month_df['Total'].sum()
+
             # Revenue from repeat customers
             repeat_customer_ids = visit_days[visit_days > 1].index
-            repeat_revenue = month_df[month_df['Customer_ID'].isin(repeat_customer_ids)]['Price'].sum()
+            repeat_revenue = month_df[month_df['Customer_ID'].isin(repeat_customer_ids)]['Total'].sum()
             repeat_revenue_pct = (repeat_revenue / total_revenue_month * 100) if total_revenue_month > 0 else 0
             
             monthly_breakdown.append({
@@ -558,11 +570,11 @@ def calculate_semiannual_repeat_breakdown(df):
             one_timer_pct_half = (one_timers_half / total_customers_half * 100) if total_customers_half > 0 else 0
             
             # Total revenue for the half
-            total_revenue_half = half_df['Price'].sum()
-            
+            total_revenue_half = half_df['Total'].sum()
+
             # Revenue from repeat customers
             repeat_customer_ids = visit_days[visit_days > 1].index
-            repeat_revenue = half_df[half_df['Customer_ID'].isin(repeat_customer_ids)]['Price'].sum()
+            repeat_revenue = half_df[half_df['Customer_ID'].isin(repeat_customer_ids)]['Total'].sum()
             repeat_revenue_pct = (repeat_revenue / total_revenue_half * 100) if total_revenue_half > 0 else 0
             
             semi_annual_breakdown.append({
@@ -600,16 +612,16 @@ def calculate_overall_repeat_breakdown(df):
         one_timer_pct_overall = (one_timers_overall / total_customers_overall * 100) if total_customers_overall > 0 else 0
         
         # Total revenue for the year
-        total_revenue_overall = df_copy['Price'].sum()
-        
+        total_revenue_overall = df_copy['Total'].sum()
+
         # Revenue from repeat customers
         repeat_customer_ids = visit_days[visit_days > 1].index
-        repeat_revenue = df_copy[df_copy['Customer_ID'].isin(repeat_customer_ids)]['Price'].sum()
+        repeat_revenue = df_copy[df_copy['Customer_ID'].isin(repeat_customer_ids)]['Total'].sum()
         repeat_revenue_pct = (repeat_revenue / total_revenue_overall * 100) if total_revenue_overall > 0 else 0
-        
+
         # Additional metrics
         avg_transactions_per_customer = len(df_copy) / total_customers_overall if total_customers_overall > 0 else 0
-        avg_spend_per_customer = df_copy.groupby('Customer_ID')['Price'].sum().mean()
+        avg_spend_per_customer = df_copy.groupby('Customer_ID')['Total'].sum().mean()
         
         # Dynamic period based on data range
         min_year = df_copy['Date'].dt.year.min()
@@ -682,7 +694,7 @@ def _calculate_trend_data(df_copy, period_column):
             repeat_trx_pct = (repeat_trx_count / current_count * 100) if current_count > 0 else 0
             
             # 5. Average Spend
-            total_revenue = period_df['Price'].sum()
+            total_revenue = period_df['Total'].sum()
             avg_spend = total_revenue / current_count if current_count > 0 else 0
             
             # 6. Average Lifespan (Cumulative Tracking)
@@ -700,7 +712,7 @@ def _calculate_trend_data(df_copy, period_column):
             
             # Extract Revenue for backward compatibility with semi-annual logic
             repeat_customer_ids = visit_days[visit_days > 1].index
-            repeat_revenue = period_df[period_df['Customer_ID'].isin(repeat_customer_ids)]['Price'].sum()
+            repeat_revenue = period_df[period_df['Customer_ID'].isin(repeat_customer_ids)]['Total'].sum()
             repeat_revenue_pct = (repeat_revenue / total_revenue * 100) if total_revenue > 0 else 0
                 
             result = {
@@ -825,8 +837,8 @@ def calculate_cumulative_retention(df, start_date='2025-04-01'):
         
         for i, month in enumerate(months):
             month_df = df_filtered[df_filtered['YearMonth'] == month]
-            total_revenue = month_df['Price'].sum()
-            
+            total_revenue = month_df['Total'].sum()
+
             # Customers in this month
             current_month_visits = month_df.groupby('Customer_ID')['Visit_Date'].unique().to_dict()
             current_customers = set(current_month_visits.keys())
@@ -853,7 +865,7 @@ def calculate_cumulative_retention(df, start_date='2025-04-01'):
             repeaters_so_far = sum(1 for cid, vdays in seen_customer_visit_days.items() if len(vdays) > 1)
             cumulative_repeat_pct = (repeaters_so_far / total_unique_so_far * 100) if total_unique_so_far > 0 else 0
             
-            retained_revenue = month_df[month_df['Customer_ID'].isin(retained_customers)]['Price'].sum()
+            retained_revenue = month_df[month_df['Customer_ID'].isin(retained_customers)]['Total'].sum()
             retained_revenue_pct = (retained_revenue / total_revenue * 100) if total_revenue > 0 else 0
             
             cumulative_results.append({
@@ -893,26 +905,26 @@ def calculate_overall_performance(df):
         # Total metrics
         total_customers = df_copy['Customer_ID'].nunique()
         total_transactions = len(df_copy)
-        total_revenue = df_copy['Price'].sum()
-        
+        total_revenue = df_copy['Total'].sum()
+
         # Visit metrics
         total_visits = len(df_copy.groupby(['Customer_ID', 'Visit_Date']))
-        avg_spend_per_visit = df_copy.groupby(['Customer_ID', 'Visit_Date'])['Price'].sum().mean()
-        
+        avg_spend_per_visit = df_copy.groupby(['Customer_ID', 'Visit_Date'])['Total'].sum().mean()
+
         # Customer types
         visit_days = df_copy.groupby('Customer_ID')['Visit_Date'].nunique()
         one_timers = (visit_days == 1).sum()
         repeat_customers = (visit_days > 1).sum()
         one_timer_pct = (one_timers / total_customers * 100) if total_customers > 0 else 0
         repeat_pct = (repeat_customers / total_customers * 100) if total_customers > 0 else 0
-        
+
         # Revenue breakdown
         repeat_customer_ids = visit_days[visit_days > 1].index
-        repeat_revenue = df_copy[df_copy['Customer_ID'].isin(repeat_customer_ids)]['Price'].sum()
+        repeat_revenue = df_copy[df_copy['Customer_ID'].isin(repeat_customer_ids)]['Total'].sum()
         repeat_revenue_pct = (repeat_revenue / total_revenue * 100) if total_revenue > 0 else 0
-        
+
         # Average customer metrics
-        avg_spend_per_customer = df_copy.groupby('Customer_ID')['Price'].sum().mean()
+        avg_spend_per_customer = df_copy.groupby('Customer_ID')['Total'].sum().mean()
         # Average lifespan (for repeat customers with visits on different days)
         # Difference between first and last purchase date
         lifespan_df = df_copy.groupby('Customer_ID')['Date'].agg(['min', 'max'])
@@ -1043,7 +1055,7 @@ def calculate_gender_performance(df):
             
             # Calculate metrics
             total_customers = gender_df['Customer_ID'].nunique()
-            total_revenue = gender_df['Price'].sum()
+            total_revenue = gender_df['Total'].sum()
             avg_spend = total_revenue / total_customers if total_customers > 0 else 0
             total_transactions = len(gender_df)
             avg_transactions_per_customer = total_transactions / total_customers if total_customers > 0 else 0
@@ -1086,12 +1098,12 @@ def calculate_product_performance(df):
             return []
         
         # Group by product and calculate metrics
-        product_stats = df.groupby(product_column).agg({
-            'Price': ['sum', 'count', 'mean'],
-            'Customer_ID': 'nunique'
-        }).reset_index()
-        
-        product_stats.columns = [product_column, 'totalRevenue', 'totalSales', 'avgPrice', 'uniqueCustomers']
+        product_stats = df.groupby(product_column).agg(
+            totalRevenue=('Total', 'sum'),
+            totalSales=('Price', 'count'),
+            avgPrice=('Price', 'mean'),
+            uniqueCustomers=('Customer_ID', 'nunique')
+        ).reset_index()
         
         # Sort by total revenue and get top 10
         top_products = product_stats.nlargest(10, 'totalRevenue')
@@ -1154,11 +1166,12 @@ def analyze_combos_and_affinity(df):
         combos_df = df[combo_mask]
         
         if not combos_df.empty:
-            combo_stats = combos_df.groupby(product_column).agg({
-                'Price': ['sum', 'count'],
-                'Customer_ID': 'nunique'
-            }).reset_index()
-            combo_stats.columns = ['ComboName', 'Revenue', 'SalesCount', 'UniqueCustomers']
+            combo_stats = combos_df.groupby(product_column).agg(
+                Revenue=('Total', 'sum'),
+                SalesCount=('Price', 'count'),
+                UniqueCustomers=('Customer_ID', 'nunique')
+            ).reset_index()
+            combo_stats.rename(columns={product_column: 'ComboName'}, inplace=True)
             top_combos = combo_stats.sort_values('Revenue', ascending=False).head(10).to_dict('records')
         else:
             top_combos = []
@@ -1247,14 +1260,14 @@ def calculate_regional_top_products(df):
             region_df = df_work[df_work['Region'] == region]
             
             # Group by Product Revenue
-            stats = region_df.groupby(product_column)['Price'].sum().reset_index()
-            top_5 = stats.sort_values('Price', ascending=False).head(5)
-            
+            stats = region_df.groupby(product_column)['Total'].sum().reset_index()
+            top_5 = stats.sort_values('Total', ascending=False).head(5)
+
             products = []
             for _, row in top_5.iterrows():
                 products.append({
                     'name': row[product_column],
-                    'revenue': float(row['Price'])
+                    'revenue': float(row['Total'])
                 })
             
             regional_products[region] = products
@@ -1283,7 +1296,7 @@ def calculate_top_shops_by_region(df):
                     region_top_shops[region] = []
                 
                 shop_df = df[df['Shop'] == shop]
-                total_revenue = shop_df['Price'].sum()
+                total_revenue = shop_df['Total'].sum()
                 total_customers = shop_df['Customer_ID'].nunique()
                 total_transactions = len(shop_df)
                 
@@ -1397,7 +1410,7 @@ def calculate_shop_loyalty_analysis(df, target_shop, logic='cross-shop', full_df
         new_df = customer_df[customer_df['Customer_ID'].isin(new_ids)]
         new_stats = new_df.groupby('Customer_ID').agg(
             totalPurchases=('Price', 'count'),
-            totalRevenue=('Price', 'sum'),
+            totalRevenue=('Total', 'sum'),
             firstPurchaseDate=('Date', 'min')
         ).reset_index()
         
@@ -1413,16 +1426,16 @@ def calculate_shop_loyalty_analysis(df, target_shop, logic='cross-shop', full_df
         source_region_counts = other_visits['Region'].value_counts()
         
         # Revenue in target shop for cross-shoppers
-        target_rev_existing = existing_df[existing_df['Shop'] == target_shop].groupby('Customer_ID')['Price'].sum()
+        target_rev_existing = existing_df[existing_df['Shop'] == target_shop].groupby('Customer_ID')['Total'].sum()
         
         # First shop visited (absolute first in database)
         first_visits = existing_df.sort_values('Date').groupby('Customer_ID').first()[['Shop']]
         
         # Calculate Revenue and Repeat metrics specifically for the target shop
         target_sales = customer_df[customer_df['Shop'].str.lower() == target_shop.lower()]
-        rev_new = target_sales[target_sales['Customer_ID'].isin(new_ids)]['Price'].sum()
-        rev_existing = target_sales[target_sales['Customer_ID'].isin(existing_ids)]['Price'].sum()
-        total_rev = target_sales['Price'].sum()
+        rev_new = target_sales[target_sales['Customer_ID'].isin(new_ids)]['Total'].sum()
+        rev_existing = target_sales[target_sales['Customer_ID'].isin(existing_ids)]['Total'].sum()
+        total_rev = target_sales['Total'].sum()
 
         # Notice we are calculating repeat rates based strictly on visits to THIS target shop
         target_sales_dates = target_sales.copy()
@@ -1461,7 +1474,7 @@ def calculate_shop_loyalty_analysis(df, target_shop, logic='cross-shop', full_df
             _target_shop_df['Customer_ID'].isin(internal_repeat_ids)
         ].groupby('Customer_ID').agg(
             visits=('Date', 'nunique'),
-            totalSpend=('Price', 'sum'),
+            totalSpend=('Total', 'sum'),
             lastVisit=('Date', 'max')
         ).sort_values('totalSpend', ascending=False).head(50).reset_index()
 
@@ -1477,7 +1490,7 @@ def calculate_shop_loyalty_analysis(df, target_shop, logic='cross-shop', full_df
 
         # 8. Cross-shop loyalty detail list (top 50 by spend)
         cross_shop_stats = existing_df.groupby('Customer_ID').agg(
-            totalSpendAtTarget=('Price', 'sum'),
+            totalSpendAtTarget=('Total', 'sum'),
             lastVisitAtTarget=('Date', 'max')
         ).sort_values('totalSpendAtTarget', ascending=False).head(50)
 
@@ -1632,7 +1645,7 @@ def calculate_monthly_shop_overview(df):
         product_overview = {'months': months, 'products': {}}
         if product_col:
             # Get top 20 products by revenue overall
-            top_products = df_copy.groupby(product_col)['Price'].sum().sort_values(ascending=False).head(20).index.tolist()
+            top_products = df_copy.groupby(product_col)['Total'].sum().sort_values(ascending=False).head(20).index.tolist()
             
             # Map products to months
             prod_monthly = df_copy[df_copy[product_col].isin(top_products)].groupby([product_col, 'YearMonth'])['Customer_ID'].count().unstack(fill_value=0)
@@ -1664,7 +1677,7 @@ def calculate_inactive_customers(df, days_threshold=30, last_month=None, last_ye
         
         # 3. Combine with stats
         cust_stats = df.groupby('Customer_ID').agg(
-            totalSpend=('Price', 'sum'),
+            totalSpend=('Total', 'sum'),
             totalVisits=('Date', 'nunique')
         ).reset_index()
         
@@ -1792,10 +1805,10 @@ def calculate_visit_sequence_spend(df):
             return []
             
         # Optimization: Only select necessary columns
-        sub_df = df[['Customer_ID', 'Date', 'Price']]
-        
+        sub_df = df[['Customer_ID', 'Date', 'Total']]
+
         # Aggregate daily spend per customer to define a "visit"
-        daily = sub_df.groupby(['Customer_ID', sub_df['Date'].dt.date], sort=False)['Price'].sum().reset_index()
+        daily = sub_df.groupby(['Customer_ID', sub_df['Date'].dt.date], sort=False)['Total'].sum().reset_index()
         
         # Sort values
         daily = daily.sort_values(['Customer_ID', 'Date'])
@@ -1807,11 +1820,11 @@ def calculate_visit_sequence_spend(df):
         daily = daily[daily['vnum'] <= 5]
         
         # Calculate cumulative total spend per customer
-        daily['cum_spend'] = daily.groupby('Customer_ID')['Price'].cumsum()
-        
+        daily['cum_spend'] = daily.groupby('Customer_ID')['Total'].cumsum()
+
         # Stats per visit number - Average of the total spent up to that visit
         stats = daily.groupby('vnum').agg(
-            avg_spend=('Price', 'mean'),
+            avg_spend=('Total', 'mean'),
             avg_cum_spend=('cum_spend', 'mean'),
             cust_count=('Customer_ID', 'count')
         ).reset_index()
@@ -2209,15 +2222,15 @@ def export_repeat_customers():
         export_df = df_work[df_work['Customer_ID'].isin(repeat_ids)].copy()
 
         if export_df.empty:
-            return Response("First Name,Phone,Gender,Shop,Date,Product,Price,Total_Customer_Spend\n", 
+            return Response("First Name,Phone,Gender,Shop,Date,Product,Price,Quantity,Total,Total_Customer_Spend\n",
                             mimetype='text/csv', headers={'Content-Disposition': f'attachment; filename={filename}'})
 
         # Calculate total spend per customer for sorting
-        spend_map = export_df.groupby('Customer_ID')['Price'].sum().to_dict()
+        spend_map = export_df.groupby('Customer_ID')['Total'].sum().to_dict()
         export_df['Total_Customer_Spend'] = export_df['Customer_ID'].map(spend_map)
 
         # Select and reorder columns for the call center
-        cols = ['First Name', 'Phone', 'Gender', 'Shop', 'Date', 'Product', 'Price', 'Total_Customer_Spend', 'Customer_ID']
+        cols = ['First Name', 'Phone', 'Gender', 'Shop', 'Date', 'Product', 'Price', 'Quantity', 'Total', 'Total_Customer_Spend', 'Customer_ID']
         # Check matching columns
         existing_cols = [c for c in cols if c in export_df.columns]
         export_df = export_df[existing_cols]
@@ -2268,15 +2281,15 @@ def export_one_time_customers():
         export_df = df_work[df_work['Customer_ID'].isin(one_time_ids)].copy()
 
         if export_df.empty:
-            return Response("First Name,Phone,Gender,Shop,Date,Product,Price,Total_Customer_Spend\n", 
+            return Response("First Name,Phone,Gender,Shop,Date,Product,Price,Quantity,Total,Total_Customer_Spend\n",
                             mimetype='text/csv', headers={'Content-Disposition': f'attachment; filename={filename}'})
 
         # Calculate total spend per customer for sorting
-        spend_map = export_df.groupby('Customer_ID')['Price'].sum().to_dict()
+        spend_map = export_df.groupby('Customer_ID')['Total'].sum().to_dict()
         export_df['Total_Customer_Spend'] = export_df['Customer_ID'].map(spend_map)
 
         # Select relevant columns
-        cols = ['First Name', 'Phone', 'Gender', 'Shop', 'Date', 'Product', 'Price', 'Total_Customer_Spend', 'Customer_ID']
+        cols = ['First Name', 'Phone', 'Gender', 'Shop', 'Date', 'Product', 'Price', 'Quantity', 'Total', 'Total_Customer_Spend', 'Customer_ID']
         existing_cols = [c for c in cols if c in export_df.columns]
         export_df = export_df[existing_cols]
 
@@ -2320,7 +2333,7 @@ def upload_data():
         df_upload = pd.read_csv(io.StringIO(csv_data))
         
         # Validate required columns
-        required_columns = ['Date', 'First Name', 'Phone', 'Price', 'Shop']
+        required_columns = ['Date', 'First Name', 'Phone', 'Price', 'Quantity', 'Total', 'Shop']
         missing_columns = [col for col in required_columns if col not in df_upload.columns]
         if missing_columns:
             return jsonify({'error': f'Missing required columns: {", ".join(missing_columns)}'}), 400
