@@ -53,23 +53,24 @@ USD_TO_KES = 1/130
 
 # Color mapping by region
 REGION_COLORS = {
-    'Nairobi CBD': '#3498db',           # Blue
+    'Nairobi Metropolitan': '#3498db',  # Blue
     'Coastal Region': '#e74c3c',        # Red
     'Western & Nyanza': '#2ecc71',      # Green
     'Central Region': '#f39c12',        # Orange
     'Rift Valley': '#9b59b6',           # Purple
-    'Diaspora': '#1abc9c', 
-    'Website': '#27C2F5', 
-    'Rongai': '#27C2F5',
-    'Rejects': '#27C2F5',             # Turquoise
+    'Diaspora': '#1abc9c',
+    'Website': '#27C2F5',
+    'Rejects': '#27C2F5',               # Turquoise
 }
 
 # Shop to Region mapping
 SHOP_REGION_MAP = {
-    'Hazina': 'Nairobi CBD',
-    'Hilton': 'Nairobi CBD',
-    'Starmall': 'Nairobi CBD',
-    'Ktda': 'Nairobi CBD',
+    'Hazina': 'Nairobi Metropolitan',
+    'Hilton': 'Nairobi Metropolitan',
+    'Starmall': 'Nairobi Metropolitan',
+    'Ktda': 'Nairobi Metropolitan',
+    'Kitengela': 'Nairobi Metropolitan',
+    'Rongai': 'Nairobi Metropolitan',
     'Rejects': 'Rejects',
     'Mombasa': 'Coastal Region',
     'Kakamega': 'Western & Nyanza',
@@ -81,12 +82,10 @@ SHOP_REGION_MAP = {
     'Thika': 'Central Region',
     'Eldoret': 'Rift Valley',
     'Nakuru': 'Rift Valley',
-    'Kitengela': 'Rift Valley',
     'Sinza': 'Diaspora',
     'Tanzania': 'Diaspora',
     'Uganda': 'Diaspora',
     'Website': 'Online',
-    'Rongai': 'Central Region',
 }
 
 # Cache variables
