@@ -1307,10 +1307,10 @@ def calculate_top_shops_by_region(df):
                     'avgSpendPerCustomer': round(float(total_revenue / total_customers), 2) if total_customers > 0 else 0
                 })
         
-        # Sort and get top 5 for each region
+        # Sort and get top 6 for each region
         for region in region_top_shops:
             region_top_shops[region].sort(key=lambda x: x['totalRevenue'], reverse=True)
-            region_top_shops[region] = region_top_shops[region][:5]
+            region_top_shops[region] = region_top_shops[region][:6]
         
         return region_top_shops
     except Exception as e:
