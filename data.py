@@ -53,7 +53,8 @@ USD_TO_KES = 1/130
 
 # Color mapping by region
 REGION_COLORS = {
-    'Nairobi Metropolitan': '#3498db',  # Blue
+    'Nairobi Metropolitan': '#3498db',
+    'Nairobi CBD': "#1eda66ac",  # Blue
     'Coastal Region': '#e74c3c',        # Red
     'Western & Nyanza': '#2ecc71',      # Green
     'Central Region': '#f39c12',        # Orange
@@ -65,10 +66,10 @@ REGION_COLORS = {
 
 # Shop to Region mapping
 SHOP_REGION_MAP = {
-    'Hazina': 'Nairobi Metropolitan',
-    'Hilton': 'Nairobi Metropolitan',
-    'Starmall': 'Nairobi Metropolitan',
-    'Ktda': 'Nairobi Metropolitan',
+    'Hazina': 'Nairobi CBD',
+    'Hilton': 'Nairobi CBD',
+    'Starmall': 'Nairobi CBD',
+    'Ktda': 'Nairobi CBD',
     'Kitengela': 'Nairobi Metropolitan',
     'Rongai': 'Nairobi Metropolitan',
     'Rejects': 'Rejects',
