@@ -167,8 +167,8 @@ def _sync_sheets_to_supabase(df_processed):
     df_sub = df_sub.where(pd.notnull(df_sub), None)
     records = df_sub.to_dict(orient='records')
 
-    # Delete all existing rows
-    sb.table('sales').delete().gte('id', 0).execute()
+    # Delete all existing rows (filter on a column guaranteed to exist)
+    sb.table('sales').delete().neq('phone', '__NO_MATCH__').execute()
 
     # Insert in batches of 500
     BATCH = 500
