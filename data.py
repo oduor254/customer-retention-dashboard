@@ -98,6 +98,86 @@ shops_results_cache   = None   # Shop-by-shop metrics — slow path, loaded sepa
 CACHE_DURATION = 1800  # Cache for 30 minutes to reduce slow network calls
 CACHE_FILE = '/tmp/customer_data_cache.csv' if os.name != 'nt' else 'customer_data_cache.csv'
 
+# ── Supabase configuration ─────────────────────────────────────────────────
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://oeluiwinbzlmjsbtjlfq.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+
+# Column mapping: Supabase (snake_case) ↔ app (original names)
+_SB_TO_APP = {
+    'date': 'Date', 'first_name': 'First Name', 'gender': 'Gender',
+    'phone': 'Phone', 'product': 'Product', 'color': 'Color',
+    'category': 'Category', 'shop': 'Shop', 'price': 'Price',
+    'quantity': 'Quantity', 'total': 'Total', 'month': 'Month',
+    'month_year': 'Month-Year', 'quarter': 'Quarter',
+    'marketing_expense': 'MARKETING EXPENSE',
+}
+_APP_TO_SB = {v: k for k, v in _SB_TO_APP.items()}
+
+
+def _load_from_supabase():
+    """Fetch all rows from Supabase sales table with automatic pagination."""
+    from supabase import create_client
+    sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+    PAGE = 1000
+    rows, offset = [], 0
+    while True:
+        res = sb.table('sales').select('*').range(offset, offset + PAGE - 1).execute()
+        chunk = res.data or []
+        rows.extend(chunk)
+        if len(chunk) < PAGE:
+            break
+        offset += PAGE
+
+    if not rows:
+        raise ValueError("Supabase sales table is empty — run a sync first.")
+
+    df = pd.DataFrame(rows)
+    # Drop internal Supabase columns
+    df.drop(columns=[c for c in ('id', 'synced_at') if c in df.columns], inplace=True)
+    # Rename to app column names
+    df.rename(columns=_SB_TO_APP, inplace=True)
+    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+    for col in ('Price', 'Quantity', 'Total', 'MARKETING EXPENSE'):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    if 'Quantity' in df.columns:
+        df['Quantity'] = df['Quantity'].replace(0, 1)
+    df['Customer_ID'] = df['Phone'].astype(str).str.strip()
+    print(f"[INFO] Loaded {len(df)} records from Supabase")
+    return df
+
+
+def _sync_sheets_to_supabase(df_processed):
+    """Push a processed DataFrame to Supabase (truncate + re-insert in batches)."""
+    from supabase import create_client
+    sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+    # Build list of dicts with Supabase column names
+    keep = [c for c in _APP_TO_SB if c in df_processed.columns]
+    df_sub = df_processed[keep].copy()
+    df_sub.rename(columns=_APP_TO_SB, inplace=True)
+
+    # Coerce date to ISO string
+    if 'date' in df_sub.columns:
+        df_sub['date'] = df_sub['date'].dt.strftime('%Y-%m-%d')
+
+    # Replace NaN/NaT with None so JSON serializes cleanly
+    df_sub = df_sub.where(pd.notnull(df_sub), None)
+    records = df_sub.to_dict(orient='records')
+
+    # Delete all existing rows
+    sb.table('sales').delete().gte('id', 0).execute()
+
+    # Insert in batches of 500
+    BATCH = 500
+    for i in range(0, len(records), BATCH):
+        sb.table('sales').insert(records[i:i + BATCH]).execute()
+
+    print(f"[INFO] Synced {len(records)} records to Supabase")
+    return len(records)
+
 
 def get_customer_data():
     """Fetch and process customer data from Google Sheets with persistent caching"""
@@ -109,8 +189,17 @@ def get_customer_data():
             print("[DEBUG] Returning in-memory cached data")
             return cached_data
     
-    # 2. Try to load from persistent cache if available and memory cache is empty
-    # import os (moved to top-level)
+    # 2. Try Supabase (fast path — replaces the slow Sheets call)
+    if SUPABASE_KEY:
+        try:
+            df_sb = _load_from_supabase()
+            cached_data = df_sb
+            last_fetch_time = time.time()
+            return cached_data
+        except Exception as e:
+            print(f"[WARNING] Supabase unavailable, falling back to Sheets: {e}")
+
+    # 3. Try to load from persistent cache if available and memory cache is empty
     if cached_data is None and os.path.exists(CACHE_FILE):
         try:
             print("[INFO] Loading from persistent cache...")
@@ -2428,6 +2517,45 @@ def upload_data():
         print(f"[ERROR] Upload failed: {str(e)}")
         print(f"[TRACEBACK] {traceback.format_exc()}")
         return jsonify({'error': f'Upload failed: {str(e)}'}), 500
+
+@app.route('/api/sync', methods=['POST'])
+def sync_to_supabase():
+    """Pull fresh data from Google Sheets and push it to Supabase."""
+    global cached_data, last_fetch_time, computed_results_cache, global_results_cache, shops_results_cache
+    if not SUPABASE_KEY:
+        return jsonify({'error': 'SUPABASE_KEY env var not set'}), 500
+    try:
+        # Force a fresh fetch from Sheets by temporarily clearing caches
+        _mem = cached_data
+        _ts  = last_fetch_time
+        cached_data     = None
+        last_fetch_time = None
+
+        # Temporarily disable Supabase path so we hit Sheets directly
+        import os as _os
+        _orig_key = _os.environ.get('SUPABASE_KEY')
+        _os.environ['SUPABASE_KEY'] = ''
+        try:
+            df_fresh = get_customer_data()
+        finally:
+            if _orig_key:
+                _os.environ['SUPABASE_KEY'] = _orig_key
+
+        count = _sync_sheets_to_supabase(df_fresh)
+
+        # Bust all result caches so next /api/data call re-reads from Supabase
+        cached_data            = None
+        last_fetch_time        = None
+        computed_results_cache = None
+        global_results_cache   = None
+        shops_results_cache    = None
+
+        return jsonify({'success': True, 'records_synced': count})
+    except Exception as e:
+        import traceback
+        print(f"[ERROR] Sync failed: {traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5002))

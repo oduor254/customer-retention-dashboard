@@ -756,6 +756,20 @@
 
                     <!-- ══ TAB: DATA & SETTINGS ══ -->
                     <div class="tab-pane" id="tab-data" style="display:none;">
+                        <!-- Supabase Sync -->
+                        <div class="upload-section" style="border-left-color:#6366f1;">
+                            <h3>🔄 Sync from Google Sheets → Supabase</h3>
+                            <p style="font-size:13px; color:#64748b; margin-bottom:14px;">
+                                Pull the latest data from Google Sheets and push it to Supabase. The dashboard will load from Supabase (fast) after syncing.
+                            </p>
+                            <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+                                <button id="syncBtn" onclick="syncToSupabase()" class="export-btn" style="background:linear-gradient(135deg,#6366f1,#4f46e5); box-shadow:0 2px 6px rgba(99,102,241,0.3);">
+                                    ⚡ Sync Now
+                                </button>
+                                <span id="syncStatus" style="font-size:13px; color:#64748b;"></span>
+                            </div>
+                        </div>
+
                         <div class="upload-section">
                             <h3>📤 Upload New Data</h3>
                             <div class="upload-form">
@@ -2758,6 +2772,30 @@
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
+        }
+
+        // ── Supabase Sync ───────────────────────────────────────────
+        async function syncToSupabase() {
+            const btn    = document.getElementById('syncBtn');
+            const status = document.getElementById('syncStatus');
+            btn.disabled = true;
+            btn.textContent = '⏳ Syncing…';
+            status.textContent = 'Fetching from Google Sheets (this may take a minute)…';
+            status.style.color = '#64748b';
+            try {
+                const res  = await fetch('/api/sync', { method: 'POST' });
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+                status.textContent = `✅ Synced ${data.records_synced.toLocaleString()} records. Reloading dashboard…`;
+                status.style.color = '#10b981';
+                setTimeout(() => { loadData(); }, 1200);
+            } catch (e) {
+                status.textContent = '❌ Sync failed: ' + e.message;
+                status.style.color = '#ef4444';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '⚡ Sync Now';
+            }
         }
 
         // ── Tab Navigation ──────────────────────────────────────────
