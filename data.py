@@ -92,7 +92,9 @@ SHOP_REGION_MAP = {
 # Cache variables
 cached_data = None
 last_fetch_time = None
-computed_results_cache = None  # Store final aggregated JSON results
+computed_results_cache = None   # Legacy: full result (kept for compatibility)
+global_results_cache  = None   # Global-only metrics (no shops) — fast path
+shops_results_cache   = None   # Shop-by-shop metrics — slow path, loaded separately
 CACHE_DURATION = 1800  # Cache for 30 minutes to reduce slow network calls
 CACHE_FILE = '/tmp/customer_data_cache.csv' if os.name != 'nt' else 'customer_data_cache.csv'
 
@@ -1845,65 +1847,12 @@ def calculate_visit_sequence_spend(df):
         print(f"[ERROR] calculate_visit_sequence_spend: {str(e)}")
         return []
 
-def _compute_all_results(df, loyalty_logic='cross-shop'):
-    """Compute all dashboard metrics. Called both by /api/data and the startup pre-warmer."""
-    global computed_results_cache
-    
-    # Pre-sort and add columns once for massive efficiency gain
+def _compute_global_results(df, loyalty_logic='cross-shop'):
+    """Compute overall dashboard metrics only (no per-shop breakdown). Fast path."""
+    global global_results_cache
+
     df = _prepare_working_df(df)
-    
-    data = {}
-    shops = {}
-    
-    # Priority shops that need full analytics immediately for the Impact Section
-    priority_shops = ['Ktda', 'Kisii', 'Busia', 'Rongai']
-    
-    if 'Shop' in df.columns:
-        available_shops = [s for s in df['Shop'].unique() if s in SHOP_REGION_MAP]
-        
-        def process_shop_data(shop):
-            try:
-                shop_df = df[df['Shop'] == shop]
-                if shop_df.empty:
-                    return shop, None
-                    
-                # Store core metrics - SUMMARY only for non-priority shops to save massive time
-                is_priority = any(p.lower() == shop.lower() for p in priority_shops)
-                
-                shop_results = {
-                    'overall': calculate_overall_performance(shop_df),
-                    'overallBreakdown': calculate_overall_repeat_breakdown(shop_df),
-                    'overview': calculate_overview(shop_df),
-                    'monthly': calculate_monthly_data(shop_df),
-                    'weekly': calculate_weekly_data(shop_df),
-                    'monthlyRepeatBreakdown': calculate_monthly_repeat_breakdown(shop_df),
-                    'quarterly': calculate_quarterly_data(shop_df),
-                    'semiAnnual': calculate_semiannual_performance(shop_df),
-                    'semiAnnualBreakdown': calculate_semiannual_repeat_breakdown(shop_df),
-                    'yearly': calculate_yearly_data(shop_df),
-                    'visitIntervals': calculate_visit_interval_distribution(shop_df),
-                    'growthRates': calculate_growth_rates(shop_df)
-                }
-                
-                # Only compute the heavy specialized Loyalty Analysis for priority shops
-                if is_priority:
-                    shop_results['loyaltyAnalysis'] = calculate_shop_loyalty_analysis(df, shop, logic=loyalty_logic)
-                return shop, shop_results
-            except Exception as e:
-                print(f"[ERROR] processing shop {shop}: {e}")
-                return shop, None
 
-        # Process shops in parallel
-        with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
-            future_to_shop = {executor.submit(process_shop_data, shop): shop for shop in available_shops}
-            for future in concurrent.futures.as_completed(future_to_shop):
-                shop, result = future.result()
-                if result:
-                    shops[shop] = result
-                    
-    data['shops'] = shops
-
-    # Compute overall dashboard metrics
     overall_results = {
         'overall': calculate_overall_performance(df),
         'overallBreakdown': calculate_overall_repeat_breakdown(df),
@@ -1925,61 +1874,111 @@ def _compute_all_results(df, loyalty_logic='cross-shop'):
         'regionalProducts': calculate_regional_top_products(df),
         'monthlyShopOverview': calculate_monthly_shop_overview(df),
         'growthRates': calculate_growth_rates(df),
-        'visitSequenceSpend': calculate_visit_sequence_spend(df)
+        'visitSequenceSpend': calculate_visit_sequence_spend(df),
     }
-    
-    # REUSE logic already computed in the loop for the special shop analysis keys
-    # to avoid re-running the heavy loyalty analysis another 6 times.
-    for p_shop in priority_shops:
-        # Match case
-        actual_name = next((s for s in shops.keys() if s.lower() == p_shop.lower()), None)
-        if actual_name and 'loyaltyAnalysis' in shops[actual_name]:
-            la = shops[actual_name]['loyaltyAnalysis']
-            data[f'{p_shop.lower()}AnalysisCross'] = la if loyalty_logic == 'cross-shop' else calculate_shop_loyalty_analysis(df, actual_name, logic='cross-shop')
-            data[f'{p_shop.lower()}AnalysisInternal'] = la if loyalty_logic == 'internal' else calculate_shop_loyalty_analysis(df, actual_name, logic='internal')
-        else:
-            # Fallback if the shop wasn't found or loop missed it
-            data[f'{p_shop.lower()}AnalysisCross'] = calculate_shop_loyalty_analysis(df, p_shop, logic='cross-shop')
-            data[f'{p_shop.lower()}AnalysisInternal'] = calculate_shop_loyalty_analysis(df, p_shop, logic='internal')
 
-    # CALCULATE MARKETING HIGHLIGHTS
     monthly_data = overall_results.get('monthly', [])
     marketing_highlights = {
-        'totalMarketingSpend': 0,
-        'totalNewCustomers': 0,
-        'overallCAC': 0,
-        'bestAcquisitionMonth': None,
-        'roiLeaderMonth': None,
-        'topEfficiencyMonth': None
+        'totalMarketingSpend': 0, 'totalNewCustomers': 0, 'overallCAC': 0,
+        'bestAcquisitionMonth': None, 'roiLeaderMonth': None, 'topEfficiencyMonth': None
     }
-    
     if monthly_data:
         total_spend = sum(m.get('marketingSpend', 0) for m in monthly_data)
-        total_new = sum(m.get('newCustomers', 0) for m in monthly_data)
+        total_new   = sum(m.get('newCustomers', 0)  for m in monthly_data)
         marketing_highlights['totalMarketingSpend'] = round(total_spend, 2)
-        marketing_highlights['totalNewCustomers'] = int(total_new)
+        marketing_highlights['totalNewCustomers']   = int(total_new)
         marketing_highlights['overallCAC'] = round(total_spend / total_new, 2) if total_new > 0 else 0
-        
-        # Monthly leaders
         best_acq = max(monthly_data, key=lambda x: x.get('newCustomers', 0), default=None)
-        if best_acq: 
+        if best_acq:
             marketing_highlights['bestAcquisitionMonth'] = f"{best_acq['period']} ({int(best_acq['newCustomers'])} new)"
-            
-        # ROI leader (Revenue / Spend)
         roi_months = [m for m in monthly_data if m.get('marketingSpend', 0) > 0]
         if roi_months:
             best_roi = max(roi_months, key=lambda x: x.get('totalRevenue', 0) / x.get('marketingSpend', 1), default=None)
             if best_roi:
                 roi_val = round(best_roi['totalRevenue'] / best_roi['marketingSpend'], 2)
                 marketing_highlights['roiLeaderMonth'] = f"{best_roi['period']} ({roi_val}x ROI)"
-            
-            # Top efficiency (Lowest CAC)
-            best_efficiency = min(roi_months, key=lambda x: x.get('cac', 999999), default=None)
-            if best_efficiency:
-                marketing_highlights['topEfficiencyMonth'] = f"{best_efficiency['period']} (CAC: {best_efficiency['cac']})"
-                
-    data['marketingHighlights'] = marketing_highlights
+            best_eff = min(roi_months, key=lambda x: x.get('cac', 999999), default=None)
+            if best_eff:
+                marketing_highlights['topEfficiencyMonth'] = f"{best_eff['period']} (CAC: {best_eff['cac']})"
+
+    data = {'marketingHighlights': marketing_highlights, 'shops': {}}
     data.update(overall_results)
+    global_results_cache = data
+    return data
+
+
+def _compute_shop_results(df, loyalty_logic='cross-shop'):
+    """Compute per-shop metrics. Slow path — called from /api/shops."""
+    global shops_results_cache
+
+    df = _prepare_working_df(df)
+    priority_shops = ['Ktda', 'Kisii', 'Busia', 'Rongai']
+    shops = {}
+
+    if 'Shop' not in df.columns:
+        return {}
+
+    available_shops = [s for s in df['Shop'].unique() if s in SHOP_REGION_MAP]
+
+    def process_shop_data(shop):
+        try:
+            shop_df = df[df['Shop'] == shop]
+            if shop_df.empty:
+                return shop, None
+            is_priority = any(p.lower() == shop.lower() for p in priority_shops)
+            shop_results = {
+                'overall': calculate_overall_performance(shop_df),
+                'overallBreakdown': calculate_overall_repeat_breakdown(shop_df),
+                'overview': calculate_overview(shop_df),
+                'monthly': calculate_monthly_data(shop_df),
+                'weekly': calculate_weekly_data(shop_df),
+                'monthlyRepeatBreakdown': calculate_monthly_repeat_breakdown(shop_df),
+                'quarterly': calculate_quarterly_data(shop_df),
+                'semiAnnual': calculate_semiannual_performance(shop_df),
+                'semiAnnualBreakdown': calculate_semiannual_repeat_breakdown(shop_df),
+                'yearly': calculate_yearly_data(shop_df),
+                'visitIntervals': calculate_visit_interval_distribution(shop_df),
+                'growthRates': calculate_growth_rates(shop_df),
+            }
+            if is_priority:
+                shop_results['loyaltyAnalysis'] = calculate_shop_loyalty_analysis(df, shop, logic=loyalty_logic)
+            return shop, shop_results
+        except Exception as e:
+            print(f"[ERROR] processing shop {shop}: {e}")
+            return shop, None
+
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
+        futures = {executor.submit(process_shop_data, s): s for s in available_shops}
+        for future in concurrent.futures.as_completed(futures):
+            shop, result = future.result()
+            if result:
+                shops[shop] = result
+
+    # Build priority-shop loyalty keys so existing frontend keys still work
+    for p_shop in priority_shops:
+        actual = next((s for s in shops if s.lower() == p_shop.lower()), None)
+        if actual and 'loyaltyAnalysis' in shops[actual]:
+            la = shops[actual]['loyaltyAnalysis']
+            shops[f'__{p_shop.lower()}AnalysisCross']    = la if loyalty_logic == 'cross-shop' else calculate_shop_loyalty_analysis(df, actual, logic='cross-shop')
+            shops[f'__{p_shop.lower()}AnalysisInternal'] = la if loyalty_logic == 'internal'   else calculate_shop_loyalty_analysis(df, actual, logic='internal')
+        else:
+            shops[f'__{p_shop.lower()}AnalysisCross']    = calculate_shop_loyalty_analysis(df, p_shop, logic='cross-shop')
+            shops[f'__{p_shop.lower()}AnalysisInternal'] = calculate_shop_loyalty_analysis(df, p_shop, logic='internal')
+
+    shops_results_cache = shops
+    return shops
+
+
+def _compute_all_results(df, loyalty_logic='cross-shop'):
+    """Legacy: compute everything at once (used for filtered requests)."""
+    global computed_results_cache
+    data  = _compute_global_results(df, loyalty_logic)
+    shops = _compute_shop_results(df, loyalty_logic)
+    # Merge loyalty analysis keys from shops into top-level data
+    for key in list(shops.keys()):
+        if key.startswith('__'):
+            data[key[2:]] = shops.pop(key)
+    data['shops'] = shops
     computed_results_cache = data
     return data
 
@@ -2040,17 +2039,22 @@ def get_data():
                 
             df = df_work
         
-        # 3. Handle caching for unfiltered requests only
-        if not is_filtered and computed_results_cache is not None:
-            computed_results_cache['cache_status'] = {
+        # 3. Fast path: return global-only cache for unfiltered requests
+        if not is_filtered and global_results_cache is not None:
+            global_results_cache['cache_status'] = {
                 'last_updated': datetime.fromtimestamp(last_fetch_time).strftime('%Y-%m-%d %H:%M:%S') if last_fetch_time else "Unknown",
                 'type': 'computed_memory'
             }
-            return jsonify(computed_results_cache)
-            
-        print(f"[INFO] Calculating metrics (Logic: {loyalty_logic})...")
-        
-        result = _compute_all_results(df, loyalty_logic=loyalty_logic)
+            return jsonify(global_results_cache)
+
+        print(f"[INFO] Calculating global metrics (Logic: {loyalty_logic})...")
+
+        # Unfiltered: compute global only (shops are loaded separately via /api/shops)
+        if not is_filtered:
+            result = _compute_global_results(df, loyalty_logic=loyalty_logic)
+        else:
+            # Filtered views need shop data for the shop-selector view
+            result = _compute_all_results(df, loyalty_logic=loyalty_logic)
 
         # SPECIAL: Inject CAC for the current filtered period if it's a single month
         if filter_month and filter_month != 'all' and filter_year and filter_year != 'all':
@@ -2080,9 +2084,8 @@ def get_data():
                     result['overall']['cac'] = matching['cac']
                     result['overall']['marketingSpend'] = matching['marketingSpend']
         
-        # Save to computed cache ONLY if this is an unfiltered request
-        if not is_filtered:
-            computed_results_cache = result
+        # global_results_cache already set inside _compute_global_results
+        pass
         
         result['cache_status'] = {
             'last_updated': datetime.fromtimestamp(last_fetch_time).strftime('%Y-%m-%d %H:%M:%S') if last_fetch_time else "Unknown",
@@ -2097,6 +2100,32 @@ def get_data():
         print(f"[TRACEBACK] {traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
+
+
+@app.route('/api/shops')
+def get_shops():
+    """Return per-shop metrics. Loaded asynchronously by the frontend after initial render."""
+    global shops_results_cache
+    try:
+        loyalty_logic = request.args.get('loyaltyMode', 'cross-shop')
+        if shops_results_cache is not None:
+            return jsonify(shops_results_cache)
+        print("[INFO] Computing shop metrics...")
+        df = get_customer_data()
+        shops = _compute_shop_results(df, loyalty_logic=loyalty_logic)
+        # Expose priority-shop loyalty keys at top level for backward compatibility
+        response = {}
+        for key in list(shops.keys()):
+            if key.startswith('__'):
+                response[key[2:]] = shops[key]
+            else:
+                response[key] = shops[key]
+        return jsonify(response)
+    except Exception as e:
+        import traceback
+        print(f"[ERROR] in /api/shops: {str(e)}")
+        print(f"[TRACEBACK] {traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/ktda-customer-analysis')
@@ -2179,10 +2208,12 @@ def export_inactive_customers():
 @app.route('/api/refresh-now', methods=['POST'])
 def refresh_now():
     """Force refresh data from Google Sheets"""
-    global cached_data, last_fetch_time, computed_results_cache
+    global cached_data, last_fetch_time, computed_results_cache, global_results_cache, shops_results_cache
     cached_data = None
     last_fetch_time = None
-    computed_results_cache = None  # Clear computed cache
+    computed_results_cache = None
+    global_results_cache   = None
+    shops_results_cache    = None
     
     # Remove persistent cache file to force fresh fetch
     if os.path.exists(CACHE_FILE):
@@ -2371,9 +2402,12 @@ def upload_data():
             worksheet.update(all_data)
         
         # Clear cache to force refresh
+        global computed_results_cache, global_results_cache, shops_results_cache
         cached_data = None
         last_fetch_time = None
-        computed_results_cache = None # Clear computed cache
+        computed_results_cache = None
+        global_results_cache   = None
+        shops_results_cache    = None
         
         # Remove persistent cache file
         if os.path.exists(CACHE_FILE):

@@ -1297,70 +1297,99 @@
             const loadingOverlay = document.getElementById('loadingOverlay');
             const content = document.getElementById('content');
 
-            // Get filter values from the consolidated period dropdown
             const periodVal = document.getElementById('periodSelect').value;
+            const isFiltered = periodVal !== 'all';
 
             loadingOverlay.classList.remove('hidden');
             content.style.display = 'none';
 
             try {
                 // Build query string
-                let url = '/api/data';
                 const params = new URLSearchParams();
-                if (globalData && globalData.last_logic) {
-                    params.append('last_logic', globalData.last_logic);
-                }
+                if (globalData && globalData.last_logic) params.append('last_logic', globalData.last_logic);
 
-                if (periodVal !== 'all') {
+                if (isFiltered) {
                     const [type, val] = periodVal.split('|');
                     if (type === 'year') {
                         params.append('year', val);
                     } else if (type === 'half') {
                         const [y, h] = val.split('-');
-                        params.append('year', y);
-                        params.append('half', h);
+                        params.append('year', y); params.append('half', h);
                     } else if (type === 'quarter') {
-                        const year = val.substring(0, 4);
-                        const quarter = val.substring(4); // "Q1", "Q2" etc
-                        params.append('year', year);
-                        params.append('quarter', quarter);
+                        params.append('year', val.substring(0, 4));
+                        params.append('quarter', val.substring(4));
                     } else if (type === 'month') {
                         const [year, month] = val.split('-');
-                        params.append('year', year);
-                        params.append('month', parseInt(month).toString());
+                        params.append('year', year); params.append('month', parseInt(month).toString());
                     } else if (type === 'week') {
                         const [year, week] = val.split('-W');
-                        params.append('year', year);
-                        params.append('week', week);
+                        params.append('year', year); params.append('week', week);
                     }
                 }
 
-                if (params.toString()) {
-                    url += '?' + params.toString();
-                }
+                const qs = params.toString();
+                const url = '/api/data' + (qs ? '?' + qs : '');
 
+                // ── Phase 1: global metrics (fast) ────────────────────────
                 const response = await fetch(url);
                 const data = await response.json();
 
-                if (data.error) {
-                    showError(data.error);
-                    return;
-                }
+                if (data.error) { showError(data.error); return; }
 
                 globalData = data;
+                if (!globalData.shops) globalData.shops = {};
 
-                // Populate filters if this is the first (unfiltered) load
-                if (periodVal === 'all') {
-                    populatePeriodSelect(globalData);
-                }
-
+                if (!isFiltered && periodVal === 'all') populatePeriodSelect(globalData);
                 populateShopSelect(globalData);
                 updateDashboard();
                 content.style.display = 'block';
+
+                // ── Phase 2: shop metrics (background, unfiltered only) ───
+                if (!isFiltered) {
+                    _loadShopsInBackground(qs);
+                }
+
             } catch (error) {
                 showError('Failed to load data: ' + error.message);
             } finally {
                 loadingOverlay.classList.add('hidden');
+            }
+        }
+
+        function _showShopLoadingPlaceholder() {
+            const container = document.getElementById('monthlyShopPerformance');
+            if (container && Object.keys(globalData.shops || {}).length === 0) {
+                container.innerHTML = `
+                    <div style="padding:18px; text-align:center; color:#64748b;
+                                border:1px dashed #cbd5e1; border-radius:6px; font-size:0.9em;">
+                        ⏳ Loading shop data in the background…
+                    </div>`;
+            }
+        }
+
+        async function _loadShopsInBackground(qs) {
+            _showShopLoadingPlaceholder();
+            try {
+                const shopsUrl = '/api/shops' + (qs ? '?' + qs : '');
+                const res = await fetch(shopsUrl);
+                const shops = await res.json();
+                if (shops.error) { console.warn('[shops]', shops.error); return; }
+
+                // Merge shop data into globalData
+                globalData.shops = {};
+                for (const key of Object.keys(shops)) {
+                    if (key.endsWith('AnalysisCross') || key.endsWith('AnalysisInternal')) {
+                        globalData[key] = shops[key];
+                    } else {
+                        globalData.shops[key] = shops[key];
+                    }
+                }
+
+                // Update shop-dependent sections without re-rendering everything
+                populateShopSelect(globalData);
+                populateMonthlyShopPerformance(globalData.shops);
+            } catch (e) {
+                console.warn('Failed to load shop data:', e.message);
             }
         }
 
