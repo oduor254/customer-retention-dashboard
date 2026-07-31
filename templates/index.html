@@ -2344,8 +2344,10 @@
                 const details = document.createElement('details');
                 details.style.marginBottom = '10px';
                 details.innerHTML = `<summary style="cursor:pointer; padding:10px; background:#f0f2f5; border-radius:4px; font-weight:bold;">${shop} Performance</summary>`;
-                const table = document.createElement('table');
-                table.innerHTML = `
+
+                // ── Monthly table ──────────────────────────────────────────
+                const monthlyTable = document.createElement('table');
+                monthlyTable.innerHTML = `
                     <thead>
                         <tr>
                             <th>Month</th>
@@ -2361,7 +2363,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        ${shopsData[shop].monthly.map(m => `
+                        ${(shopsData[shop].monthly || []).map(m => `
                             <tr>
                                 <td>${m.period}</td>
                                 <td>${m.totalCustomers.toLocaleString()}</td>
@@ -2377,7 +2379,129 @@
                         `).join('')}
                     </tbody>
                 `;
-                details.appendChild(table);
+                details.appendChild(monthlyTable);
+
+                // ── Weekly table (Week 1 2026 → present) ──────────────────
+                const weekly = (shopsData[shop].weekly || []).filter(w => w.period >= '2026-W01');
+                if (weekly.length > 0) {
+                    const ROWS_DEFAULT = 20;
+                    let showingAll = false;
+
+                    // Divider + heading row
+                    const weeklyHeader = document.createElement('div');
+                    weeklyHeader.style.cssText = 'display:flex; align-items:center; justify-content:space-between; margin:18px 0 8px;';
+                    weeklyHeader.innerHTML = `
+                        <h4 style="margin:0; color:#1F3864; font-size:0.97em; letter-spacing:0.3px;">
+                            📆 Weekly Performance (Week 1 2026 – Present)
+                        </h4>
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <button class="weekly-toggle-btn"
+                                style="padding:5px 14px; border:1px solid #2E75B6; border-radius:5px;
+                                       background:#fff; color:#2E75B6; font-size:0.82em; font-weight:600;
+                                       cursor:pointer;">
+                                Show all ${weekly.length} weeks
+                            </button>
+                            <button class="weekly-export-btn export-btn"
+                                style="padding:5px 14px; font-size:0.82em;">
+                                ⬇️ Export CSV
+                            </button>
+                        </div>
+                    `;
+                    details.appendChild(weeklyHeader);
+
+                    // Table wrapper (overflow scroll for wide tables)
+                    const tWrap = document.createElement('div');
+                    tWrap.style.cssText = 'overflow-x:auto;';
+
+                    const weeklyTable = document.createElement('table');
+                    weeklyTable.style.cssText = 'width:100%; font-size:0.88em;';
+
+                    const renderWeeklyRows = (rows) => rows.map((w, i) => `
+                        <tr>
+                            <td>${w.period}</td>
+                            <td>${w.totalCustomers.toLocaleString()}</td>
+                            <td>${(w.newCustomers || 0).toLocaleString()}</td>
+                            <td>${(w.newPct || 0).toFixed(1)}%</td>
+                            <td>${w.retainedCustomers.toLocaleString()}</td>
+                            <td>${(w.retentionPct || 0).toFixed(1)}%</td>
+                            <td>${w.repeatCustomers.toLocaleString()}</td>
+                            <td>${(w.repeatPct || 0).toFixed(1)}%</td>
+                            <td>Ksh ${Math.round(w.avgSpendPerCustomer || 0).toLocaleString()}</td>
+                            <td>Ksh ${Math.round(w.totalRevenue || 0).toLocaleString()}</td>
+                            <td>${(w.avgLifespan || 0).toFixed(1)}d</td>
+                        </tr>
+                    `).join('');
+
+                    const buildTable = (showAll) => `
+                        <thead>
+                            <tr>
+                                <th>Week</th>
+                                <th>Customers</th>
+                                <th>New</th>
+                                <th>New %</th>
+                                <th>Retained</th>
+                                <th>Ret. %</th>
+                                <th>Repeat</th>
+                                <th>Repeat %</th>
+                                <th>Avg Spend</th>
+                                <th>Revenue</th>
+                                <th>Avg Life</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${renderWeeklyRows(showAll ? weekly : weekly.slice(0, ROWS_DEFAULT))}
+                            ${!showAll && weekly.length > ROWS_DEFAULT
+                                ? `<tr><td colspan="11" style="text-align:center; color:#64748b;
+                                       font-style:italic; font-size:0.85em; padding:8px;">
+                                       Showing ${ROWS_DEFAULT} of ${weekly.length} weeks
+                                   </td></tr>`
+                                : ''}
+                        </tbody>
+                    `;
+
+                    weeklyTable.innerHTML = buildTable(false);
+                    tWrap.appendChild(weeklyTable);
+                    details.appendChild(tWrap);
+
+                    // Toggle show-all / show-less
+                    const toggleBtn = weeklyHeader.querySelector('.weekly-toggle-btn');
+                    toggleBtn.addEventListener('click', () => {
+                        showingAll = !showingAll;
+                        weeklyTable.innerHTML = buildTable(showingAll);
+                        toggleBtn.textContent = showingAll
+                            ? 'Show less'
+                            : `Show all ${weekly.length} weeks`;
+                    });
+
+                    // Export CSV
+                    const exportBtn = weeklyHeader.querySelector('.weekly-export-btn');
+                    exportBtn.addEventListener('click', () => {
+                        const headers = ['Week','Customers','New','New %','Retained','Ret %',
+                                         'Repeat','Repeat %','Avg Spend (Ksh)','Revenue (Ksh)','Avg Lifespan (d)'];
+                        const rows = weekly.map(w => [
+                            w.period,
+                            w.totalCustomers,
+                            w.newCustomers || 0,
+                            (w.newPct || 0).toFixed(1),
+                            w.retainedCustomers,
+                            (w.retentionPct || 0).toFixed(1),
+                            w.repeatCustomers,
+                            (w.repeatPct || 0).toFixed(1),
+                            Math.round(w.avgSpendPerCustomer || 0),
+                            Math.round(w.totalRevenue || 0),
+                            (w.avgLifespan || 0).toFixed(1),
+                        ]);
+                        const csv = [headers, ...rows].map(r => r.join(',')).join('\n');
+                        const blob = new Blob([csv], { type: 'text/csv' });
+                        const url  = URL.createObjectURL(blob);
+                        const a    = document.createElement('a');
+                        a.href     = url;
+                        a.download = `${shop.replace(/\s+/g, '_')}_weekly_performance.csv`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                    });
+                }
+
                 container.appendChild(details);
             });
         }
