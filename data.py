@@ -117,7 +117,7 @@ _APP_TO_SB = {v: k for k, v in _SB_TO_APP.items()}
 
 def _load_from_supabase():
     """Fetch all rows from Supabase sales table with automatic pagination."""
-    from supabase import create_client
+    from supabase import create_client # type: ignore
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
     PAGE = 1000
@@ -151,7 +151,7 @@ def _load_from_supabase():
 
 def _sync_sheets_to_supabase(df_processed):
     """Push a processed DataFrame to Supabase (truncate + re-insert in batches)."""
-    from supabase import create_client
+    from supabase import create_client # type: ignore
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
     # Build list of dicts with Supabase column names
@@ -2521,25 +2521,23 @@ def upload_data():
 @app.route('/api/sync', methods=['POST'])
 def sync_to_supabase():
     """Pull fresh data from Google Sheets and push it to Supabase."""
-    global cached_data, last_fetch_time, computed_results_cache, global_results_cache, shops_results_cache
+    global cached_data, last_fetch_time, computed_results_cache, global_results_cache, shops_results_cache, SUPABASE_KEY
     if not SUPABASE_KEY:
         return jsonify({'error': 'SUPABASE_KEY env var not set'}), 500
     try:
-        # Force a fresh fetch from Sheets by temporarily clearing caches
+        # Save state and clear caches to force a fresh Sheets fetch
         _mem = cached_data
         _ts  = last_fetch_time
+        _key = SUPABASE_KEY
         cached_data     = None
         last_fetch_time = None
 
-        # Temporarily disable Supabase path so we hit Sheets directly
-        import os as _os
-        _orig_key = _os.environ.get('SUPABASE_KEY')
-        _os.environ['SUPABASE_KEY'] = ''
+        # Temporarily null the module-level key so get_customer_data() skips Supabase
+        SUPABASE_KEY = None
         try:
             df_fresh = get_customer_data()
         finally:
-            if _orig_key:
-                _os.environ['SUPABASE_KEY'] = _orig_key
+            SUPABASE_KEY = _key  # always restore
 
         count = _sync_sheets_to_supabase(df_fresh)
 
