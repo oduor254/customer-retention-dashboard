@@ -99,7 +99,7 @@ CACHE_DURATION = 1800  # Cache for 30 minutes to reduce slow network calls
 CACHE_FILE = '/tmp/customer_data_cache.csv' if os.name != 'nt' else 'customer_data_cache.csv'
 
 # ── Supabase configuration ─────────────────────────────────────────────────
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://oeluiwinbzlmjsbtjlfq.supabase.co")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://nzxtvjulbucqcijqgive.supabase.co")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 
