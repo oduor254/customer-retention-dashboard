@@ -2521,34 +2521,71 @@ def upload_data():
 @app.route('/api/sync', methods=['POST'])
 def sync_to_supabase():
     """Pull fresh data from Google Sheets and push it to Supabase."""
-    global cached_data, last_fetch_time, computed_results_cache, global_results_cache, shops_results_cache, SUPABASE_KEY
+    global cached_data, last_fetch_time, computed_results_cache, global_results_cache, shops_results_cache
     if not SUPABASE_KEY:
         return jsonify({'error': 'SUPABASE_KEY env var not set'}), 500
     try:
-        # Save state and clear caches to force a fresh Sheets fetch
-        _mem = cached_data
-        _ts  = last_fetch_time
-        _key = SUPABASE_KEY
-        cached_data     = None
-        last_fetch_time = None
+        import math as _math
+        from supabase import create_client as _sb_client  # type: ignore
+        from google.oauth2.service_account import Credentials as _Creds
 
-        # Temporarily null the module-level key so get_customer_data() skips Supabase
-        SUPABASE_KEY = None
-        try:
-            df_fresh = get_customer_data()
-        finally:
-            SUPABASE_KEY = _key  # always restore
+        # ── 1. Load from Google Sheets directly (bypass Flask cache/file writes) ──
+        _scopes = ['https://www.googleapis.com/auth/spreadsheets',
+                   'https://www.googleapis.com/auth/drive']
+        if os.path.exists(JSON_FILE_PATH):
+            _creds = _Creds.from_service_account_file(JSON_FILE_PATH, scopes=_scopes)
+        elif GOOGLE_SERVICE_ACCOUNT_JSON:
+            _creds = _Creds.from_service_account_info(
+                _parse_service_account_json(GOOGLE_SERVICE_ACCOUNT_JSON), scopes=_scopes)
+        else:
+            return jsonify({'error': 'No Google credentials found'}), 500
 
-        count = _sync_sheets_to_supabase(df_fresh)
+        _gc   = gspread.authorize(_creds)
+        _ws   = _gc.open(SHEET_NAME).worksheet(WORKSHEET_NAME)
+        _rows = _ws.get_all_records()
+        df    = pd.DataFrame(_rows)
 
-        # Bust all result caches so next /api/data call re-reads from Supabase
+        # ── 2. Basic cleaning (mirrors get_customer_data) ──────────────────────
+        if 'Shop' not in df.columns and 'Location' in df.columns:
+            df.rename(columns={'Location': 'Shop'}, inplace=True)
+        if 'Gender' not in df.columns and 'Female' in df.columns:
+            df.rename(columns={'Female': 'Gender'}, inplace=True)
+        if 'Shop' in df.columns:
+            df['Shop'] = df['Shop'].astype(str).str.strip().str.title()
+        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+        df = df[df['Gender'].astype(str).str.lower().str.strip() != 'organization'].copy()
+        for _col in ('Price', 'Quantity', 'Total', 'MARKETING EXPENSE'):
+            if _col in df.columns:
+                df[_col] = pd.to_numeric(
+                    df[_col].astype(str).str.replace(r'[^\d.]', '', regex=True),
+                    errors='coerce')
+
+        # ── 3. Map to Supabase column names ────────────────────────────────────
+        _keep   = [c for c in _APP_TO_SB if c in df.columns]
+        df_out  = df[_keep].copy()
+        df_out['Date'] = df_out['Date'].dt.strftime('%Y-%m-%d')
+        df_out.rename(columns=_APP_TO_SB, inplace=True)
+        records = [
+            {k: (None if isinstance(v, float) and _math.isnan(v) else v)
+             for k, v in row.items()}
+            for row in df_out.to_dict(orient='records')
+        ]
+
+        # ── 4. Push to Supabase ────────────────────────────────────────────────
+        sb = _sb_client(SUPABASE_URL, SUPABASE_KEY)
+        sb.table('sales').delete().neq('phone', '__NO_MATCH__').execute()
+        BATCH = 500
+        for i in range(0, len(records), BATCH):
+            sb.table('sales').insert(records[i:i + BATCH]).execute()
+
+        # ── 5. Bust all caches so next load re-reads from Supabase ─────────────
         cached_data            = None
         last_fetch_time        = None
         computed_results_cache = None
         global_results_cache   = None
         shops_results_cache    = None
 
-        return jsonify({'success': True, 'records_synced': count})
+        return jsonify({'success': True, 'records_synced': len(records)})
     except Exception as e:
         import traceback
         print(f"[ERROR] Sync failed: {traceback.format_exc()}")
