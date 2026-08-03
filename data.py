@@ -128,7 +128,7 @@ def _sb_headers():
 
 def _load_from_supabase():
     """Fetch all rows via direct PostgreSQL connection — single query, ~2 seconds."""
-    import psycopg2
+    import psycopg2 # type: ignore
     conn = psycopg2.connect(DATABASE_URL, connect_timeout=15)
     try:
         df = pd.read_sql(
@@ -651,7 +651,7 @@ def calculate_monthly_repeat_breakdown(df):
 def calculate_semiannual_repeat_breakdown(df):
     """Calculate breakdown of repeat customers across semi-annual periods"""
     try:
-        df_copy = df.copy()
+        df_copy = df.dropna(subset=['Date']).copy()
         df_copy['Half'] = df_copy['Date'].dt.month.apply(lambda x: 'H1' if x <= 6 else 'H2')
         df_copy['YearHalf'] = df_copy['Date'].dt.year.astype(str) + '-' + df_copy['Half']
         df_copy['Visit_Date'] = df_copy['Date'].dt.date
