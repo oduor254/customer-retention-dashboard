@@ -20,6 +20,20 @@ load_dotenv()
 
 app = Flask(__name__)
 
+# Custom JSON encoder so jsonify() handles numpy scalar types without crashing.
+from flask.json.provider import DefaultJSONProvider as _DefaultJSONProvider
+
+class _NumpyJSONProvider(_DefaultJSONProvider):
+    def default(self, obj):
+        if hasattr(obj, 'item'):          # numpy scalars (int64, float64, bool_)
+            return obj.item()
+        if hasattr(obj, 'tolist'):        # numpy arrays
+            return obj.tolist()
+        return super().default(obj)
+
+app.json_provider_class = _NumpyJSONProvider
+app.json = _NumpyJSONProvider(app)
+
 # Configuration
 # Prefer environment variable (Render/Production), fallback to local file only for development
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
@@ -191,6 +205,64 @@ def _sync_sheets_to_supabase(df_processed):
 
     print(f"[INFO] Synced {len(records)} records to Supabase")
     return len(records)
+
+
+def _read_analytics_cache():
+    """Fetch precomputed analytics from Supabase. Returns the row dict or None."""
+    if not SUPABASE_KEY:
+        return None
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/analytics_cache?select=result,updated_at&id=eq.1",
+            headers=_sb_headers(),
+            timeout=10,
+        )
+        if resp.ok:
+            rows = resp.json()
+            if rows:
+                return rows[0]
+    except Exception as _e:
+        print(f"[INFO] Analytics cache read failed: {_e}")
+    return None
+
+
+def _write_analytics_cache(result):
+    """Persist precomputed analytics result to Supabase. Silently ignores errors."""
+    if not SUPABASE_KEY:
+        return
+    try:
+        import json as _json, numpy as _np, copy as _copy
+        class _Enc(_json.JSONEncoder):
+            def default(self, o):
+                if hasattr(o, 'item'): return o.item()
+                if hasattr(o, 'tolist'): return o.tolist()
+                return str(o)
+        safe = _json.loads(_json.dumps(result, cls=_Enc))
+        safe.pop('cache_status', None)
+        requests.post(
+            f"{SUPABASE_URL}/rest/v1/analytics_cache",
+            headers={**_sb_headers(), 'Prefer': 'resolution=merge-duplicates'},
+            data=_json.dumps({'id': 1, 'result': safe}),
+            timeout=30,
+        )
+        print("[INFO] Analytics cache written to Supabase")
+    except Exception as _e:
+        print(f"[WARNING] Analytics cache write failed: {_e}")
+
+
+def _bust_analytics_cache():
+    """Delete the analytics cache row so the next request recomputes."""
+    if not SUPABASE_KEY:
+        return
+    try:
+        requests.delete(
+            f"{SUPABASE_URL}/rest/v1/analytics_cache?id=eq.1",
+            headers=_sb_headers(),
+            timeout=10,
+        )
+        print("[INFO] Analytics cache busted")
+    except Exception as _e:
+        print(f"[WARNING] Analytics cache bust failed: {_e}")
 
 
 def get_customer_data():
@@ -2108,9 +2180,20 @@ def get_data():
     ])
     
     try:
+        # ── Fast path: serve precomputed analytics from Supabase cache ─────────
+        if not is_filtered and SUPABASE_KEY:
+            _ac = _read_analytics_cache()
+            if _ac:
+                _res = _ac['result']
+                _res['cache_status'] = {
+                    'last_updated': _ac.get('updated_at', 'unknown'),
+                    'type': 'analytics_cache',
+                }
+                return jsonify(_res)
+
         # 1. Fetch data
         df = get_customer_data()
-        
+
         # 2. Apply time filters if provided
         if is_filtered:
             print(f"[INFO] Applying time filters: year={filter_year}, month={filter_month}, quarter={filter_quarter}, week={filter_week}")
@@ -2187,14 +2270,15 @@ def get_data():
                     result['overall']['cac'] = matching['cac']
                     result['overall']['marketingSpend'] = matching['marketingSpend']
         
-        # global_results_cache already set inside _compute_global_results
-        pass
-        
         result['cache_status'] = {
             'last_updated': datetime.fromtimestamp(last_fetch_time).strftime('%Y-%m-%d %H:%M:%S') if last_fetch_time else "Unknown",
             'type': 'computed_fresh'
         }
-        
+
+        # Persist unfiltered result so Vercel's next cold-start serves it instantly
+        if not is_filtered:
+            _write_analytics_cache(result)
+
         return jsonify(result)
     
     except Exception as e:
@@ -2540,7 +2624,6 @@ def sync_to_supabase():
         return jsonify({'error': 'SUPABASE_KEY env var not set'}), 500
     try:
         import math as _math
-        from supabase import create_client as _sb_client  # type: ignore
         from google.oauth2.service_account import Credentials as _Creds
 
         # ── 1. Load from Google Sheets directly (bypass Flask cache/file writes) ──
@@ -2585,12 +2668,21 @@ def sync_to_supabase():
             for row in df_out.to_dict(orient='records')
         ]
 
-        # ── 4. Push to Supabase ────────────────────────────────────────────────
-        sb = _sb_client(SUPABASE_URL, SUPABASE_KEY)
-        sb.table('sales').delete().neq('phone', '__NO_MATCH__').execute()
-        BATCH = 500
-        for i in range(0, len(records), BATCH):
-            sb.table('sales').insert(records[i:i + BATCH]).execute()
+        # ── 4. Push to Supabase via plain HTTP (no supabase-py / no EBUSY) ──────
+        import json as _json
+        _hdrs = _sb_headers()
+        requests.delete(
+            f"{SUPABASE_URL}/rest/v1/sales?phone=neq.__NO_MATCH__",
+            headers=_hdrs, timeout=30
+        ).raise_for_status()
+        _BATCH = 500
+        for _i in range(0, len(records), _BATCH):
+            requests.post(
+                f"{SUPABASE_URL}/rest/v1/sales",
+                headers=_hdrs,
+                data=_json.dumps(records[_i:_i + _BATCH]),
+                timeout=60,
+            ).raise_for_status()
 
         # ── 5. Bust all caches so next load re-reads from Supabase ─────────────
         cached_data            = None
@@ -2598,6 +2690,7 @@ def sync_to_supabase():
         computed_results_cache = None
         global_results_cache   = None
         shops_results_cache    = None
+        _bust_analytics_cache()
 
         return jsonify({'success': True, 'records_synced': len(records)})
     except Exception as e:

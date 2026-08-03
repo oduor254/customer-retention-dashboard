@@ -140,3 +140,21 @@ for i in range(0, len(records), BATCH):
         sys.exit(f"ERROR inserting batch at row {i}: {e}")
 
 print(f"\n=== DONE: {total_inserted} records synced to Supabase ===\n")
+
+# ── Step 7: bust analytics cache so the dashboard recomputes on next load ─────
+print("=== STEP 7: Busting analytics cache ===")
+try:
+    import requests as _req
+    _hdrs = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+    _r = _req.delete(
+        f"{SUPABASE_URL}/rest/v1/analytics_cache?id=eq.1",
+        headers=_hdrs, timeout=10
+    )
+    print(f"  Analytics cache busted (HTTP {_r.status_code})")
+except Exception as _e:
+    print(f"  (analytics_cache bust skipped: {_e})")
