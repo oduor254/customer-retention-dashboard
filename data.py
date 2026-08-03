@@ -115,16 +115,26 @@ _SB_TO_APP = {
 _APP_TO_SB = {v: k for k, v in _SB_TO_APP.items()}
 
 
-def _load_from_supabase():
-    """Fetch all rows from Supabase sales table with automatic pagination."""
-    from supabase import create_client # type: ignore
-    sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+def _sb_headers():
+    """Headers for direct PostgREST requests — no supabase-py client needed."""
+    return {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
 
+
+def _load_from_supabase():
+    """Fetch all rows from Supabase via plain HTTP (avoids WebSocket EBUSY)."""
     PAGE = 1000
     rows, offset = [], 0
+    hdrs = _sb_headers()
     while True:
-        res = sb.table('sales').select('*').range(offset, offset + PAGE - 1).execute()
-        chunk = res.data or []
+        url = f"{SUPABASE_URL}/rest/v1/sales?select=*&limit={PAGE}&offset={offset}"
+        resp = requests.get(url, headers=hdrs, timeout=30)
+        resp.raise_for_status()
+        chunk = resp.json()
         rows.extend(chunk)
         if len(chunk) < PAGE:
             break
@@ -134,9 +144,7 @@ def _load_from_supabase():
         raise ValueError("Supabase sales table is empty — run a sync first.")
 
     df = pd.DataFrame(rows)
-    # Drop internal Supabase columns
     df.drop(columns=[c for c in ('id', 'synced_at') if c in df.columns], inplace=True)
-    # Rename to app column names
     df.rename(columns=_SB_TO_APP, inplace=True)
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
     for col in ('Price', 'Quantity', 'Total', 'MARKETING EXPENSE'):
@@ -150,30 +158,38 @@ def _load_from_supabase():
 
 
 def _sync_sheets_to_supabase(df_processed):
-    """Push a processed DataFrame to Supabase (truncate + re-insert in batches)."""
-    from supabase import create_client # type: ignore
-    sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+    """Push a processed DataFrame to Supabase via plain HTTP."""
+    import json as _json
+    import math as _math
 
-    # Build list of dicts with Supabase column names
     keep = [c for c in _APP_TO_SB if c in df_processed.columns]
     df_sub = df_processed[keep].copy()
     df_sub.rename(columns=_APP_TO_SB, inplace=True)
-
-    # Coerce date to ISO string
     if 'date' in df_sub.columns:
         df_sub['date'] = df_sub['date'].dt.strftime('%Y-%m-%d')
 
-    # Replace NaN/NaT with None so JSON serializes cleanly
-    df_sub = df_sub.where(pd.notnull(df_sub), None)
-    records = df_sub.to_dict(orient='records')
+    records = [
+        {k: (None if isinstance(v, float) and _math.isnan(v) else v)
+         for k, v in row.items()}
+        for row in df_sub.to_dict(orient='records')
+    ]
 
-    # Delete all existing rows (filter on a column guaranteed to exist)
-    sb.table('sales').delete().neq('phone', '__NO_MATCH__').execute()
+    hdrs = _sb_headers()
+    # Delete all rows
+    requests.delete(
+        f"{SUPABASE_URL}/rest/v1/sales?phone=neq.__NO_MATCH__",
+        headers=hdrs, timeout=30
+    ).raise_for_status()
 
     # Insert in batches of 500
     BATCH = 500
     for i in range(0, len(records), BATCH):
-        sb.table('sales').insert(records[i:i + BATCH]).execute()
+        requests.post(
+            f"{SUPABASE_URL}/rest/v1/sales",
+            headers=hdrs,
+            data=_json.dumps(records[i:i + BATCH]),
+            timeout=60
+        ).raise_for_status()
 
     print(f"[INFO] Synced {len(records)} records to Supabase")
     return len(records)
