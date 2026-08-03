@@ -99,8 +99,9 @@ CACHE_DURATION = 1800  # Cache for 30 minutes to reduce slow network calls
 CACHE_FILE = '/tmp/customer_data_cache.csv' if os.name != 'nt' else 'customer_data_cache.csv'
 
 # ── Supabase configuration ─────────────────────────────────────────────────
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://nzxtvjulbucqcijqgive.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+SUPABASE_URL  = os.environ.get("SUPABASE_URL", "https://nzxtvjulbucqcijqgive.supabase.co")
+SUPABASE_KEY  = os.environ.get("SUPABASE_KEY")
+DATABASE_URL  = os.environ.get("DATABASE_URL")   # postgres://... direct connection for fast bulk reads
 
 
 # Column mapping: Supabase (snake_case) ↔ app (original names)
@@ -126,25 +127,22 @@ def _sb_headers():
 
 
 def _load_from_supabase():
-    """Fetch all rows from Supabase via plain HTTP (avoids WebSocket EBUSY)."""
-    PAGE = 1000
-    rows, offset = [], 0
-    hdrs = _sb_headers()
-    while True:
-        url = f"{SUPABASE_URL}/rest/v1/sales?select=*&limit={PAGE}&offset={offset}"
-        resp = requests.get(url, headers=hdrs, timeout=30)
-        resp.raise_for_status()
-        chunk = resp.json()
-        rows.extend(chunk)
-        if len(chunk) < PAGE:
-            break
-        offset += PAGE
+    """Fetch all rows via direct PostgreSQL connection — single query, ~2 seconds."""
+    import psycopg2
+    conn = psycopg2.connect(DATABASE_URL, connect_timeout=15)
+    try:
+        df = pd.read_sql(
+            "SELECT date,first_name,gender,phone,product,color,category,shop,"
+            "price,quantity,total,month,month_year,quarter,marketing_expense "
+            "FROM sales",
+            conn
+        )
+    finally:
+        conn.close()
 
-    if not rows:
+    if df.empty:
         raise ValueError("Supabase sales table is empty — run a sync first.")
 
-    df = pd.DataFrame(rows)
-    df.drop(columns=[c for c in ('id', 'synced_at') if c in df.columns], inplace=True)
     df.rename(columns=_SB_TO_APP, inplace=True)
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
     for col in ('Price', 'Quantity', 'Total', 'MARKETING EXPENSE'):
@@ -153,7 +151,7 @@ def _load_from_supabase():
     if 'Quantity' in df.columns:
         df['Quantity'] = df['Quantity'].replace(0, 1)
     df['Customer_ID'] = df['Phone'].astype(str).str.strip()
-    print(f"[INFO] Loaded {len(df)} records from Supabase")
+    print(f"[INFO] Loaded {len(df)} records from Supabase (direct SQL)")
     return df
 
 
@@ -205,8 +203,8 @@ def get_customer_data():
             print("[DEBUG] Returning in-memory cached data")
             return cached_data
     
-    # 2. Try Supabase (fast path — replaces the slow Sheets call)
-    if SUPABASE_KEY:
+    # 2. Try Supabase via direct SQL (fast path — single query, ~2 seconds)
+    if DATABASE_URL:
         try:
             df_sb = _load_from_supabase()
             cached_data = df_sb

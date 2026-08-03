@@ -10,5 +10,10 @@
       "src": "/(.*)",
       "dest": "data.py"
     }
-  ]
+  ],
+  "functions": {
+    "data.py": {
+      "maxDuration": 60
+    }
+  }
 }
