@@ -602,7 +602,7 @@ def calculate_retention_repeat(period_df, prev_period_df=None, full_df=None):
 def calculate_monthly_repeat_breakdown(df):
     """Calculate breakdown of repeat customers across months"""
     try:
-        df_copy = df.copy()
+        df_copy = df.dropna(subset=['Date']).copy()
         df_copy['YearMonth'] = df_copy['Date'].dt.to_period('M')
         df_copy['Visit_Date'] = df_copy['Date'].dt.date
         months = sorted(df_copy['YearMonth'].unique())
@@ -1429,7 +1429,7 @@ def calculate_monthly_loyalty_trends(df, target_shop):
         if df.empty or 'Shop' not in df.columns:
             return []
             
-        df_copy = df.copy()
+        df_copy = df.dropna(subset=['Date']).copy()
         df_copy['YearMonth'] = df_copy['Date'].dt.to_period('M')
         months = sorted(df_copy['YearMonth'].unique())
         
@@ -1714,7 +1714,7 @@ def calculate_monthly_shop_overview(df):
         if df.empty or 'Shop' not in df.columns:
             return empty_res
         
-        df_copy = df.copy()
+        df_copy = df.dropna(subset=['Date']).copy()
         df_copy['YearMonth'] = df_copy['Date'].dt.to_period('M').astype(str)
         
         # Filter to relevant shops
