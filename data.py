@@ -2616,86 +2616,108 @@ def upload_data():
         print(f"[TRACEBACK] {traceback.format_exc()}")
         return jsonify({'error': f'Upload failed: {str(e)}'}), 500
 
+def _run_sync():
+    """Core sync logic: pull Google Sheets → push to Supabase → bust caches.
+    Returns (records_synced: int) on success, raises on failure."""
+    global cached_data, last_fetch_time, computed_results_cache, global_results_cache, shops_results_cache
+    import math as _math, json as _json
+    from google.oauth2.service_account import Credentials as _Creds
+
+    _scopes = ['https://www.googleapis.com/auth/spreadsheets',
+               'https://www.googleapis.com/auth/drive']
+    if os.path.exists(JSON_FILE_PATH):
+        _creds = _Creds.from_service_account_file(JSON_FILE_PATH, scopes=_scopes)
+    elif GOOGLE_SERVICE_ACCOUNT_JSON:
+        _creds = _Creds.from_service_account_info(
+            _parse_service_account_json(GOOGLE_SERVICE_ACCOUNT_JSON), scopes=_scopes)
+    else:
+        raise RuntimeError('No Google credentials found')
+
+    _gc   = gspread.authorize(_creds)
+    _ws   = _gc.open(SHEET_NAME).worksheet(WORKSHEET_NAME)
+    df    = pd.DataFrame(_ws.get_all_records())
+
+    if 'Shop' not in df.columns and 'Location' in df.columns:
+        df.rename(columns={'Location': 'Shop'}, inplace=True)
+    if 'Gender' not in df.columns and 'Female' in df.columns:
+        df.rename(columns={'Female': 'Gender'}, inplace=True)
+    if 'Shop' in df.columns:
+        df['Shop'] = df['Shop'].astype(str).str.strip().str.title()
+    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+    df = df[df['Gender'].astype(str).str.lower().str.strip() != 'organization'].copy()
+    for _col in ('Price', 'Quantity', 'Total', 'MARKETING EXPENSE'):
+        if _col in df.columns:
+            df[_col] = pd.to_numeric(
+                df[_col].astype(str).str.replace(r'[^\d.]', '', regex=True),
+                errors='coerce')
+
+    _keep  = [c for c in _APP_TO_SB if c in df.columns]
+    df_out = df[_keep].copy()
+    df_out['Date'] = df_out['Date'].dt.strftime('%Y-%m-%d')
+    df_out.rename(columns=_APP_TO_SB, inplace=True)
+    records = [
+        {k: (None if isinstance(v, float) and _math.isnan(v) else v)
+         for k, v in row.items()}
+        for row in df_out.to_dict(orient='records')
+    ]
+
+    _hdrs = _sb_headers()
+    requests.delete(
+        f"{SUPABASE_URL}/rest/v1/sales?phone=neq.__NO_MATCH__",
+        headers=_hdrs, timeout=30
+    ).raise_for_status()
+    _BATCH = 500
+    for _i in range(0, len(records), _BATCH):
+        requests.post(
+            f"{SUPABASE_URL}/rest/v1/sales",
+            headers=_hdrs,
+            data=_json.dumps(records[_i:_i + _BATCH]),
+            timeout=60,
+        ).raise_for_status()
+
+    cached_data            = None
+    last_fetch_time        = None
+    computed_results_cache = None
+    global_results_cache   = None
+    shops_results_cache    = None
+    _bust_analytics_cache()
+
+    print(f"[INFO] Sync complete: {len(records)} records")
+    return len(records)
+
+
 @app.route('/api/sync', methods=['POST'])
 def sync_to_supabase():
-    """Pull fresh data from Google Sheets and push it to Supabase."""
-    global cached_data, last_fetch_time, computed_results_cache, global_results_cache, shops_results_cache
+    """Manual sync triggered from the dashboard UI."""
     if not SUPABASE_KEY:
         return jsonify({'error': 'SUPABASE_KEY env var not set'}), 500
     try:
-        import math as _math
-        from google.oauth2.service_account import Credentials as _Creds
-
-        # ── 1. Load from Google Sheets directly (bypass Flask cache/file writes) ──
-        _scopes = ['https://www.googleapis.com/auth/spreadsheets',
-                   'https://www.googleapis.com/auth/drive']
-        if os.path.exists(JSON_FILE_PATH):
-            _creds = _Creds.from_service_account_file(JSON_FILE_PATH, scopes=_scopes)
-        elif GOOGLE_SERVICE_ACCOUNT_JSON:
-            _creds = _Creds.from_service_account_info(
-                _parse_service_account_json(GOOGLE_SERVICE_ACCOUNT_JSON), scopes=_scopes)
-        else:
-            return jsonify({'error': 'No Google credentials found'}), 500
-
-        _gc   = gspread.authorize(_creds)
-        _ws   = _gc.open(SHEET_NAME).worksheet(WORKSHEET_NAME)
-        _rows = _ws.get_all_records()
-        df    = pd.DataFrame(_rows)
-
-        # ── 2. Basic cleaning (mirrors get_customer_data) ──────────────────────
-        if 'Shop' not in df.columns and 'Location' in df.columns:
-            df.rename(columns={'Location': 'Shop'}, inplace=True)
-        if 'Gender' not in df.columns and 'Female' in df.columns:
-            df.rename(columns={'Female': 'Gender'}, inplace=True)
-        if 'Shop' in df.columns:
-            df['Shop'] = df['Shop'].astype(str).str.strip().str.title()
-        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-        df = df[df['Gender'].astype(str).str.lower().str.strip() != 'organization'].copy()
-        for _col in ('Price', 'Quantity', 'Total', 'MARKETING EXPENSE'):
-            if _col in df.columns:
-                df[_col] = pd.to_numeric(
-                    df[_col].astype(str).str.replace(r'[^\d.]', '', regex=True),
-                    errors='coerce')
-
-        # ── 3. Map to Supabase column names ────────────────────────────────────
-        _keep   = [c for c in _APP_TO_SB if c in df.columns]
-        df_out  = df[_keep].copy()
-        df_out['Date'] = df_out['Date'].dt.strftime('%Y-%m-%d')
-        df_out.rename(columns=_APP_TO_SB, inplace=True)
-        records = [
-            {k: (None if isinstance(v, float) and _math.isnan(v) else v)
-             for k, v in row.items()}
-            for row in df_out.to_dict(orient='records')
-        ]
-
-        # ── 4. Push to Supabase via plain HTTP (no supabase-py / no EBUSY) ──────
-        import json as _json
-        _hdrs = _sb_headers()
-        requests.delete(
-            f"{SUPABASE_URL}/rest/v1/sales?phone=neq.__NO_MATCH__",
-            headers=_hdrs, timeout=30
-        ).raise_for_status()
-        _BATCH = 500
-        for _i in range(0, len(records), _BATCH):
-            requests.post(
-                f"{SUPABASE_URL}/rest/v1/sales",
-                headers=_hdrs,
-                data=_json.dumps(records[_i:_i + _BATCH]),
-                timeout=60,
-            ).raise_for_status()
-
-        # ── 5. Bust all caches so next load re-reads from Supabase ─────────────
-        cached_data            = None
-        last_fetch_time        = None
-        computed_results_cache = None
-        global_results_cache   = None
-        shops_results_cache    = None
-        _bust_analytics_cache()
-
-        return jsonify({'success': True, 'records_synced': len(records)})
+        n = _run_sync()
+        return jsonify({'success': True, 'records_synced': n})
     except Exception as e:
         import traceback
         print(f"[ERROR] Sync failed: {traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/cron', methods=['GET'])
+def cron_sync():
+    """Vercel Cron Job endpoint — called automatically on schedule.
+    Vercel sends Authorization: Bearer <CRON_SECRET> with every cron request."""
+    cron_secret = os.environ.get('CRON_SECRET')
+    if cron_secret:
+        auth = request.headers.get('Authorization', '')
+        if auth != f'Bearer {cron_secret}':
+            return jsonify({'error': 'Unauthorized'}), 401
+    if not SUPABASE_KEY:
+        return jsonify({'error': 'SUPABASE_KEY not set'}), 500
+    try:
+        n = _run_sync()
+        return jsonify({'success': True, 'records_synced': n,
+                        'synced_at': datetime.utcnow().isoformat()})
+    except Exception as e:
+        import traceback
+        print(f"[ERROR] Cron sync failed: {traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
 
