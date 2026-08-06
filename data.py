@@ -237,9 +237,77 @@ def _load_from_supabase():
     return df
 
 
-def _push_to_supabase_sql(df_sb):
-    """Replace the whole sales table using TRUNCATE + COPY over a direct
-    PostgreSQL connection.
+def _ensure_supabase_tables():
+    """Create the supporting tables if they are missing.
+
+    Done in code rather than by hand so a fresh Supabase project works without
+    anyone remembering to paste SQL into the dashboard.
+    """
+    import psycopg2 # type: ignore
+    conn = psycopg2.connect(DATABASE_URL, **_PG_KWARGS)
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS analytics_cache (
+                    id         INTEGER PRIMARY KEY DEFAULT 1,
+                    result     JSONB NOT NULL,
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                )""")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS sync_state (
+                    id             INTEGER PRIMARY KEY DEFAULT 1,
+                    last_sheet_row INTEGER NOT NULL DEFAULT 0,
+                    last_synced_at TIMESTAMPTZ DEFAULT NOW()
+                )""")
+    finally:
+        conn.close()
+
+
+def _get_last_sheet_row():
+    """Last Google Sheets row number already synced (0 = nothing synced yet)."""
+    import psycopg2 # type: ignore
+    conn = psycopg2.connect(DATABASE_URL, **_PG_KWARGS)
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT last_sheet_row FROM sync_state WHERE id = 1")
+            row = cur.fetchone()
+            return row[0] if row else 0
+    finally:
+        conn.close()
+
+
+def _set_last_sheet_row(n):
+    import psycopg2 # type: ignore
+    conn = psycopg2.connect(DATABASE_URL, **_PG_KWARGS)
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO sync_state (id, last_sheet_row, last_synced_at)
+                VALUES (1, %s, NOW())
+                ON CONFLICT (id) DO UPDATE
+                  SET last_sheet_row = EXCLUDED.last_sheet_row,
+                      last_synced_at = NOW()""", (n,))
+    finally:
+        conn.close()
+
+
+def _col_letter(n):
+    """1 -> A, 26 -> Z, 27 -> AA."""
+    s = ''
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def _push_to_supabase_sql(df_sb, truncate=True):
+    """Write rows to the sales table over a direct PostgreSQL connection.
+
+    truncate=True replaces the table (TRUNCATE + COPY); truncate=False appends
+    (COPY only), which is what an incremental sync needs.
 
     The REST path could not do this: DELETE over ~250k rows blows past
     PostgREST's statement timeout (SQLSTATE 57014), and inserting via HTTP
@@ -264,39 +332,41 @@ def _push_to_supabase_sql(df_sb):
 
     conn = psycopg2.connect(DATABASE_URL, **_PG_KWARGS)
     try:
-        # Reap sessions abandoned mid-read by a dropped pooler connection. They sit
-        # 'idle in transaction' holding ACCESS SHARE on `sales` and would block our
-        # TRUNCATE indefinitely. Only genuinely idle transactions are touched —
-        # never a query that is actively running.
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-                WHERE datname = current_database()
-                  AND pid <> pg_backend_pid()
-                  AND state = 'idle in transaction'
-                  AND state_change < now() - interval '30 seconds'
-                  AND query ILIKE '%sales%'
-            """)
-            reaped = cur.rowcount
-            if reaped > 0:
-                print(f"[INFO] Cleared {reaped} stale session(s) holding locks on sales")
+        if truncate:
+            # Reap sessions abandoned mid-read by a dropped pooler connection. They
+            # sit 'idle in transaction' holding ACCESS SHARE on `sales` and would
+            # block our TRUNCATE indefinitely. Only genuinely idle transactions are
+            # touched — never a query that is actively running.
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+                    WHERE datname = current_database()
+                      AND pid <> pg_backend_pid()
+                      AND state = 'idle in transaction'
+                      AND state_change < now() - interval '30 seconds'
+                      AND query ILIKE '%sales%'
+                """)
+                reaped = cur.rowcount
+                if reaped > 0:
+                    print(f"[INFO] Cleared {reaped} stale session(s) holding locks on sales")
 
         conn.autocommit = False
         with conn.cursor() as cur:
             # Generous ceiling for the COPY; the default (2min) is tight for a bulk load.
             cur.execute("SET statement_timeout = '300s'")
-            # TRUNCATE needs ACCESS EXCLUSIVE, so any in-flight read of `sales`
-            # blocks it. Fail fast and say so rather than burning the whole
-            # request budget waiting on a lock we are never going to get.
-            cur.execute("SET lock_timeout = '20s'")
-            try:
-                cur.execute("TRUNCATE TABLE sales RESTART IDENTITY")
-            except psycopg2.errors.LockNotAvailable:
-                raise RuntimeError(
-                    'Could not lock the sales table — another query is still '
-                    'reading it. Wait a minute and sync again.'
-                ) from None
+            if truncate:
+                # TRUNCATE needs ACCESS EXCLUSIVE, so any in-flight read of `sales`
+                # blocks it. Fail fast and say so rather than burning the whole
+                # request budget waiting on a lock we are never going to get.
+                cur.execute("SET lock_timeout = '20s'")
+                try:
+                    cur.execute("TRUNCATE TABLE sales RESTART IDENTITY")
+                except psycopg2.errors.LockNotAvailable:
+                    raise RuntimeError(
+                        'Could not lock the sales table — another query is still '
+                        'reading it. Wait a minute and sync again.'
+                    ) from None
             cur.copy_expert(
                 f"COPY sales ({','.join(cols)}) FROM STDIN WITH (FORMAT csv, NULL '')",
                 buf,
@@ -308,7 +378,8 @@ def _push_to_supabase_sql(df_sb):
     finally:
         conn.close()
 
-    print(f"[INFO] Pushed {len(df_sb)} records to Supabase (TRUNCATE + COPY)")
+    print(f"[INFO] Pushed {len(df_sb)} records to Supabase "
+          f"({'TRUNCATE + COPY' if truncate else 'COPY append'})")
     return len(df_sb)
 
 
@@ -2721,11 +2792,29 @@ def upload_data():
         print(f"[TRACEBACK] {traceback.format_exc()}")
         return jsonify({'error': f'Upload failed: {str(e)}'}), 500
 
-def _run_sync():
-    """Core sync logic: pull Google Sheets → push to Supabase → bust caches.
-    Returns (records_synced: int) on success, raises on failure."""
+def _run_sync(full=False):
+    """Pull Google Sheets → push to Supabase → refresh the analytics cache.
+
+    Incremental by default: `sync_state.last_sheet_row` records how far down the
+    sheet we have already read, and only rows below that are fetched and
+    appended. This matters at both ends — it avoids re-uploading a quarter of a
+    million rows, and it avoids re-downloading them from Sheets, which was the
+    slowest part of the whole operation.
+
+    Incremental assumes the sheet is append-only. If historical rows are edited
+    or deleted the row offsets drift, so pass full=True (Sync Now → Full resync)
+    to rebuild the table from scratch.
+
+    Returns a dict describing what happened.
+    """
     global cached_data, last_fetch_time, computed_results_cache, global_results_cache, shops_results_cache
     from google.oauth2.service_account import Credentials as _Creds
+
+    if not DATABASE_URL:
+        raise RuntimeError(
+            'DATABASE_URL is not set. Sync needs a direct PostgreSQL connection '
+            '— the REST API times out clearing a table this size.'
+        )
 
     _scopes = ['https://www.googleapis.com/auth/spreadsheets',
                'https://www.googleapis.com/auth/drive']
@@ -2737,11 +2826,44 @@ def _run_sync():
     else:
         raise RuntimeError('No Google credentials found')
 
+    _ensure_supabase_tables()
+
     _t0   = time.time()
     _gc   = gspread.authorize(_creds)
     _ws   = _gc.open(SHEET_NAME).worksheet(WORKSHEET_NAME)
-    df    = pd.DataFrame(_ws.get_all_records())
-    print(f"[INFO] Sheets fetch: {len(df)} rows in {time.time() - _t0:.1f}s")
+
+    _last_row = 0 if full else _get_last_sheet_row()
+    _header   = _ws.row_values(1)
+    _sheet_rows = len(_ws.col_values(1))     # includes the header row
+
+    if _last_row <= 1 or _last_row > _sheet_rows:
+        # Never synced, or the sheet shrank (rows deleted) — offsets are no
+        # longer trustworthy, so rebuild from scratch.
+        if _last_row > _sheet_rows:
+            print(f"[INFO] Sheet shrank ({_sheet_rows} rows < last synced "
+                  f"{_last_row}); falling back to a full resync")
+        full = True
+        _last_row = 0
+
+    if full:
+        df = pd.DataFrame(_ws.get_all_records())
+        _new_last_row = len(df) + 1          # +1 for the header
+        print(f"[INFO] Sheets full fetch: {len(df)} rows in {time.time() - _t0:.1f}s")
+    else:
+        _rng  = f"A{_last_row + 1}:{_col_letter(len(_header))}{_sheet_rows}"
+        _vals = _ws.get(_rng) if _sheet_rows > _last_row else []
+        # Short rows come back truncated; pad so the DataFrame lines up.
+        _vals = [r + [''] * (len(_header) - len(r)) for r in _vals]
+        df    = pd.DataFrame(_vals, columns=_header)
+        _new_last_row = _last_row + len(df)
+        print(f"[INFO] Sheets incremental fetch: {len(df)} new row(s) "
+              f"(range {_rng}) in {time.time() - _t0:.1f}s")
+
+        if df.empty:
+            _set_last_sheet_row(_new_last_row)
+            print("[INFO] No new rows — nothing to sync")
+            return {'mode': 'incremental', 'new_records': 0,
+                    'skipped': True, 'seconds': round(time.time() - _t0, 1)}
 
     if 'Shop' not in df.columns and 'Location' in df.columns:
         df.rename(columns={'Location': 'Shop'}, inplace=True)
@@ -2762,24 +2884,20 @@ def _run_sync():
     df_out['Date'] = df_out['Date'].dt.strftime('%Y-%m-%d')
     df_out.rename(columns=_APP_TO_SB, inplace=True)
 
-    if not DATABASE_URL:
-        raise RuntimeError(
-            'DATABASE_URL is not set. Sync needs a direct PostgreSQL connection '
-            '— the REST API times out clearing a table this size.'
-        )
     _t1 = time.time()
-    n_synced = _push_to_supabase_sql(df_out)
+    n_synced = _push_to_supabase_sql(df_out, truncate=full)
+    _set_last_sheet_row(_new_last_row)
     print(f"[INFO] Supabase push: {time.time() - _t1:.1f}s")
 
     computed_results_cache = None
     shops_results_cache    = None
 
-    # Compute the dashboard's analytics here, from the data already in memory,
-    # and store the result. This is the whole point: free-tier Supabase cannot
-    # serve a 250k-row bulk read reliably (burst IO gets exhausted and reads
-    # start timing out), so the dashboard must never have to do one. Sync is the
-    # only place that already holds the full dataset, so it is the only place
-    # that should pay for the computation.
+    # Refresh the analytics cache. The dashboard must never bulk-read `sales`
+    # itself — free-tier Supabase cannot serve a 250k-row read reliably (burst
+    # IO gets exhausted and reads start timing out), so sync owns that cost.
+    #
+    # A full sync already holds every row in memory. An incremental sync only
+    # holds the new ones, so it has to read the rest back to recompute totals.
     df['Customer_ID'] = df['Phone'].astype(str).str.strip()
     if 'Quantity' in df.columns:
         df['Quantity'] = df['Quantity'].fillna(0).replace(0, 1)
@@ -2787,6 +2905,21 @@ def _run_sync():
         if _c in df.columns:
             df[_c] = df[_c].fillna(0)
 
+    if full:
+        df_all = df
+    else:
+        try:
+            df_all = _load_from_supabase()
+        except Exception as _e:
+            # Rows are safely stored; only the cached analytics are stale.
+            print(f"[WARNING] Could not reload for analytics ({_e}); busting cache")
+            _bust_analytics_cache()
+            cached_data = last_fetch_time = None
+            return {'mode': 'incremental', 'new_records': n_synced,
+                    'analytics': 'deferred',
+                    'seconds': round(time.time() - _t0, 1)}
+
+    df = df_all
     cached_data     = df
     last_fetch_time = time.time()
 
@@ -2805,18 +2938,26 @@ def _run_sync():
         print(f"[WARNING] Analytics precompute failed ({_e}); busting cache instead")
         _bust_analytics_cache()
 
-    print(f"[INFO] Sync complete: {n_synced} records in {time.time() - _t0:.1f}s total")
-    return n_synced
+    _mode = 'full' if full else 'incremental'
+    print(f"[INFO] Sync complete ({_mode}): {n_synced} record(s) "
+          f"in {time.time() - _t0:.1f}s total")
+    return {'mode': _mode, 'new_records': n_synced, 'total_records': len(df),
+            'seconds': round(time.time() - _t0, 1)}
 
 
 @app.route('/api/sync', methods=['POST'])
 def sync_to_supabase():
-    """Manual sync triggered from the dashboard UI."""
+    """Manual sync from the dashboard UI. Incremental unless ?full=true."""
     if not DATABASE_URL:
         return jsonify({'error': 'DATABASE_URL env var not set'}), 500
+    full = (request.args.get('full', '').lower() in ('1', 'true', 'yes')
+            or (request.get_json(silent=True) or {}).get('full') is True)
     try:
-        n = _run_sync()
-        return jsonify({'success': True, 'records_synced': n})
+        result = _run_sync(full=full)
+        # records_synced is kept for the existing frontend.
+        return jsonify({'success': True,
+                        'records_synced': result.get('new_records', 0),
+                        **result})
     except Exception as e:
         import traceback
         print(f"[ERROR] Sync failed: {traceback.format_exc()}")
@@ -2835,9 +2976,11 @@ def cron_sync():
     if not DATABASE_URL:
         return jsonify({'error': 'DATABASE_URL not set'}), 500
     try:
-        n = _run_sync()
-        return jsonify({'success': True, 'records_synced': n,
-                        'synced_at': datetime.utcnow().isoformat()})
+        result = _run_sync(full=False)
+        return jsonify({'success': True,
+                        'records_synced': result.get('new_records', 0),
+                        'synced_at': datetime.utcnow().isoformat(),
+                        **result})
     except Exception as e:
         import traceback
         print(f"[ERROR] Cron sync failed: {traceback.format_exc()}")
