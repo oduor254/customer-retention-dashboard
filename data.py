@@ -143,48 +143,84 @@ def _sb_headers():
 _SALES_COLS = ("date,first_name,gender,phone,product,color,category,shop,"
                "price,quantity,total,month,month_year,quarter,marketing_expense")
 
+# Shared psycopg2 connect options.
+#
+# keepalives are the important part: when Supavisor drops a connection the
+# server forgets the session entirely (pg_stat_activity shows nothing) while the
+# client stays blocked on a socket that will never deliver another byte. No
+# statement_timeout can save you there — the server is not running anything.
+# Without these, a dropped read hangs the request forever; with them the OS
+# tears the socket down and psycopg2 raises so the retry below can take over.
+_PG_KWARGS = dict(
+    connect_timeout=15,
+    keepalives=1,
+    keepalives_idle=30,
+    keepalives_interval=10,
+    keepalives_count=3,
+    options='-c statement_timeout=120000',
+)
+
 
 def _load_from_supabase():
     """Fetch all rows via direct PostgreSQL connection — single query, ~2 seconds.
 
-    Uses COPY TO STDOUT rather than a plain SELECT: streaming CSV avoids
-    materialising 250k rows as Python tuples and survives the pooler far more
-    reliably. autocommit is essential — a read that dies mid-flight while a
-    transaction is open leaves the backend 'idle in transaction', pinning an
-    ACCESS SHARE lock on `sales` that blocks the next sync's TRUNCATE.
+    Read in keyset-paginated chunks. Supavisor will not carry a quarter-million
+    rows in a single response: a full-table SELECT dies with 'server closed the
+    connection unexpectedly' / 'SSL error: unexpected eof', and COPY TO STDOUT
+    fails even more reliably (3/3 on the transaction pooler, 2/2 on the session
+    pooler). Short chunked queries stay well inside what the pooler tolerates.
+    COPY *into* the table is fine — see _push_to_supabase_sql — only the
+    outbound direction breaks.
+
+    autocommit is essential: a read that dies mid-flight inside an open
+    transaction leaves the backend 'idle in transaction' pinning an ACCESS SHARE
+    lock on `sales`, which blocks the next sync's TRUNCATE indefinitely.
     """
-    import io as _io
     import psycopg2 # type: ignore
 
-    # Supavisor drops a bulk COPY every so often (SSL EOF / PGRES_COPY_OUT with no
-    # message). It is transient, so retry on a brand-new connection rather than
-    # letting one blip fall the whole dashboard back to Google Sheets.
+    CHUNK = 50_000
     ATTEMPTS = 3
-    for attempt in range(1, ATTEMPTS + 1):
-        conn = None
-        try:
-            conn = psycopg2.connect(DATABASE_URL, connect_timeout=15)
-            conn.autocommit = True
-            buf = _io.StringIO()
-            with conn.cursor() as cur:
-                cur.execute("SET statement_timeout = '120s'")
-                cur.copy_expert(
-                    f"COPY (SELECT {_SALES_COLS} FROM sales) TO STDOUT "
-                    "WITH (FORMAT csv, HEADER true)",
-                    buf,
-                )
-            buf.seek(0)
-            df = pd.read_csv(buf)
+    frames, last_id, cols = [], 0, None
+
+    while True:
+        chunk_rows = None
+        for attempt in range(1, ATTEMPTS + 1):
+            conn = None
+            try:
+                conn = psycopg2.connect(DATABASE_URL, **_PG_KWARGS)
+                conn.autocommit = True
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT id,{_SALES_COLS} FROM sales "
+                        "WHERE id > %s ORDER BY id LIMIT %s",
+                        (last_id, CHUNK),
+                    )
+                    chunk_rows = cur.fetchall()
+                    cols = [d[0] for d in cur.description]
+                break
+            except (psycopg2.OperationalError, psycopg2.DatabaseError) as e:
+                if attempt == ATTEMPTS:
+                    raise
+                print(f"[WARNING] Supabase read chunk @id>{last_id} attempt "
+                      f"{attempt}/{ATTEMPTS} failed ({type(e).__name__}: "
+                      f"{str(e).strip()[:80]}); retrying...")
+                time.sleep(2 * attempt)
+            finally:
+                if conn is not None:
+                    conn.close()
+
+        if not chunk_rows:
             break
-        except (psycopg2.OperationalError, psycopg2.DatabaseError) as e:
-            if attempt == ATTEMPTS:
-                raise
-            print(f"[WARNING] Supabase read attempt {attempt}/{ATTEMPTS} failed "
-                  f"({type(e).__name__}: {e}); retrying...")
-            time.sleep(2 * attempt)
-        finally:
-            if conn is not None:
-                conn.close()
+        frames.append(pd.DataFrame(chunk_rows, columns=cols))
+        last_id = chunk_rows[-1][0]
+        if len(chunk_rows) < CHUNK:
+            break
+
+    if not frames:
+        raise ValueError("Supabase sales table is empty — run a sync first.")
+
+    df = pd.concat(frames, ignore_index=True)
+    df.drop(columns=['id'], inplace=True)
 
     if df.empty:
         raise ValueError("Supabase sales table is empty — run a sync first.")
@@ -226,7 +262,7 @@ def _push_to_supabase_sql(df_sb):
         )
     buf.seek(0)
 
-    conn = psycopg2.connect(DATABASE_URL, connect_timeout=15)
+    conn = psycopg2.connect(DATABASE_URL, **_PG_KWARGS)
     try:
         # Reap sessions abandoned mid-read by a dropped pooler connection. They sit
         # 'idle in transaction' holding ACCESS SHARE on `sales` and would block our
@@ -2735,12 +2771,39 @@ def _run_sync():
     n_synced = _push_to_supabase_sql(df_out)
     print(f"[INFO] Supabase push: {time.time() - _t1:.1f}s")
 
-    cached_data            = None
-    last_fetch_time        = None
     computed_results_cache = None
-    global_results_cache   = None
     shops_results_cache    = None
-    _bust_analytics_cache()
+
+    # Compute the dashboard's analytics here, from the data already in memory,
+    # and store the result. This is the whole point: free-tier Supabase cannot
+    # serve a 250k-row bulk read reliably (burst IO gets exhausted and reads
+    # start timing out), so the dashboard must never have to do one. Sync is the
+    # only place that already holds the full dataset, so it is the only place
+    # that should pay for the computation.
+    df['Customer_ID'] = df['Phone'].astype(str).str.strip()
+    if 'Quantity' in df.columns:
+        df['Quantity'] = df['Quantity'].fillna(0).replace(0, 1)
+    for _c in ('Price', 'Total', 'MARKETING EXPENSE'):
+        if _c in df.columns:
+            df[_c] = df[_c].fillna(0)
+
+    cached_data     = df
+    last_fetch_time = time.time()
+
+    _t2 = time.time()
+    try:
+        _results = _compute_global_results(df)
+        _results['cache_status'] = {
+            'last_updated': datetime.fromtimestamp(last_fetch_time).strftime('%Y-%m-%d %H:%M:%S'),
+            'type': 'analytics_cache',
+        }
+        _write_analytics_cache(_results)
+        print(f"[INFO] Analytics computed + cached: {time.time() - _t2:.1f}s")
+    except Exception as _e:
+        # A failed computation must not lose the freshly synced rows; just clear
+        # the stale cache so the next request recomputes.
+        print(f"[WARNING] Analytics precompute failed ({_e}); busting cache instead")
+        _bust_analytics_cache()
 
     print(f"[INFO] Sync complete: {n_synced} records in {time.time() - _t0:.1f}s total")
     return n_synced
