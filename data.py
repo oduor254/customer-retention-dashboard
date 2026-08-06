@@ -140,19 +140,51 @@ def _sb_headers():
     }
 
 
+_SALES_COLS = ("date,first_name,gender,phone,product,color,category,shop,"
+               "price,quantity,total,month,month_year,quarter,marketing_expense")
+
+
 def _load_from_supabase():
-    """Fetch all rows via direct PostgreSQL connection — single query, ~2 seconds."""
+    """Fetch all rows via direct PostgreSQL connection — single query, ~2 seconds.
+
+    Uses COPY TO STDOUT rather than a plain SELECT: streaming CSV avoids
+    materialising 250k rows as Python tuples and survives the pooler far more
+    reliably. autocommit is essential — a read that dies mid-flight while a
+    transaction is open leaves the backend 'idle in transaction', pinning an
+    ACCESS SHARE lock on `sales` that blocks the next sync's TRUNCATE.
+    """
+    import io as _io
     import psycopg2 # type: ignore
-    conn = psycopg2.connect(DATABASE_URL, connect_timeout=15)
-    try:
-        df = pd.read_sql(
-            "SELECT date,first_name,gender,phone,product,color,category,shop,"
-            "price,quantity,total,month,month_year,quarter,marketing_expense "
-            "FROM sales",
-            conn
-        )
-    finally:
-        conn.close()
+
+    # Supavisor drops a bulk COPY every so often (SSL EOF / PGRES_COPY_OUT with no
+    # message). It is transient, so retry on a brand-new connection rather than
+    # letting one blip fall the whole dashboard back to Google Sheets.
+    ATTEMPTS = 3
+    for attempt in range(1, ATTEMPTS + 1):
+        conn = None
+        try:
+            conn = psycopg2.connect(DATABASE_URL, connect_timeout=15)
+            conn.autocommit = True
+            buf = _io.StringIO()
+            with conn.cursor() as cur:
+                cur.execute("SET statement_timeout = '120s'")
+                cur.copy_expert(
+                    f"COPY (SELECT {_SALES_COLS} FROM sales) TO STDOUT "
+                    "WITH (FORMAT csv, HEADER true)",
+                    buf,
+                )
+            buf.seek(0)
+            df = pd.read_csv(buf)
+            break
+        except (psycopg2.OperationalError, psycopg2.DatabaseError) as e:
+            if attempt == ATTEMPTS:
+                raise
+            print(f"[WARNING] Supabase read attempt {attempt}/{ATTEMPTS} failed "
+                  f"({type(e).__name__}: {e}); retrying...")
+            time.sleep(2 * attempt)
+        finally:
+            if conn is not None:
+                conn.close()
 
     if df.empty:
         raise ValueError("Supabase sales table is empty — run a sync first.")
@@ -169,42 +201,79 @@ def _load_from_supabase():
     return df
 
 
-def _sync_sheets_to_supabase(df_processed):
-    """Push a processed DataFrame to Supabase via plain HTTP."""
-    import json as _json
-    import math as _math
+def _push_to_supabase_sql(df_sb):
+    """Replace the whole sales table using TRUNCATE + COPY over a direct
+    PostgreSQL connection.
 
-    keep = [c for c in _APP_TO_SB if c in df_processed.columns]
-    df_sub = df_processed[keep].copy()
-    df_sub.rename(columns=_APP_TO_SB, inplace=True)
-    if 'date' in df_sub.columns:
-        df_sub['date'] = df_sub['date'].dt.strftime('%Y-%m-%d')
+    The REST path could not do this: DELETE over ~250k rows blows past
+    PostgREST's statement timeout (SQLSTATE 57014), and inserting via HTTP
+    needs ~500 round-trips. TRUNCATE is O(1) regardless of row count and
+    COPY streams every row in a single pass.
 
-    records = [
-        {k: (None if isinstance(v, float) and _math.isnan(v) else v)
-         for k, v in row.items()}
-        for row in df_sub.to_dict(orient='records')
-    ]
+    `df_sb` must already use Supabase (snake_case) column names.
+    """
+    import csv as _csv
+    import io as _io
+    import psycopg2  # type: ignore
 
-    hdrs = _sb_headers()
-    # Delete all rows
-    requests.delete(
-        f"{SUPABASE_URL}/rest/v1/sales?phone=neq.__NO_MATCH__",
-        headers=hdrs, timeout=30
-    ).raise_for_status()
+    cols = list(df_sb.columns)
+    buf = _io.StringIO()
+    writer = _csv.writer(buf, lineterminator='\n')
+    for row in df_sb.itertuples(index=False, name=None):
+        writer.writerow(
+            ['' if v is None or (isinstance(v, float) and v != v) else v
+             for v in row]
+        )
+    buf.seek(0)
 
-    # Insert in batches of 500
-    BATCH = 500
-    for i in range(0, len(records), BATCH):
-        requests.post(
-            f"{SUPABASE_URL}/rest/v1/sales",
-            headers=hdrs,
-            data=_json.dumps(records[i:i + BATCH]),
-            timeout=60
-        ).raise_for_status()
+    conn = psycopg2.connect(DATABASE_URL, connect_timeout=15)
+    try:
+        # Reap sessions abandoned mid-read by a dropped pooler connection. They sit
+        # 'idle in transaction' holding ACCESS SHARE on `sales` and would block our
+        # TRUNCATE indefinitely. Only genuinely idle transactions are touched —
+        # never a query that is actively running.
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+                WHERE datname = current_database()
+                  AND pid <> pg_backend_pid()
+                  AND state = 'idle in transaction'
+                  AND state_change < now() - interval '30 seconds'
+                  AND query ILIKE '%sales%'
+            """)
+            reaped = cur.rowcount
+            if reaped > 0:
+                print(f"[INFO] Cleared {reaped} stale session(s) holding locks on sales")
 
-    print(f"[INFO] Synced {len(records)} records to Supabase")
-    return len(records)
+        conn.autocommit = False
+        with conn.cursor() as cur:
+            # Generous ceiling for the COPY; the default (2min) is tight for a bulk load.
+            cur.execute("SET statement_timeout = '300s'")
+            # TRUNCATE needs ACCESS EXCLUSIVE, so any in-flight read of `sales`
+            # blocks it. Fail fast and say so rather than burning the whole
+            # request budget waiting on a lock we are never going to get.
+            cur.execute("SET lock_timeout = '20s'")
+            try:
+                cur.execute("TRUNCATE TABLE sales RESTART IDENTITY")
+            except psycopg2.errors.LockNotAvailable:
+                raise RuntimeError(
+                    'Could not lock the sales table — another query is still '
+                    'reading it. Wait a minute and sync again.'
+                ) from None
+            cur.copy_expert(
+                f"COPY sales ({','.join(cols)}) FROM STDIN WITH (FORMAT csv, NULL '')",
+                buf,
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    print(f"[INFO] Pushed {len(df_sb)} records to Supabase (TRUNCATE + COPY)")
+    return len(df_sb)
 
 
 def _read_analytics_cache():
@@ -231,7 +300,7 @@ def _write_analytics_cache(result):
     if not SUPABASE_KEY:
         return
     try:
-        import json as _json, numpy as _np, copy as _copy
+        import json as _json
         class _Enc(_json.JSONEncoder):
             def default(self, o):
                 if hasattr(o, 'item'): return o.item()
@@ -2620,7 +2689,6 @@ def _run_sync():
     """Core sync logic: pull Google Sheets → push to Supabase → bust caches.
     Returns (records_synced: int) on success, raises on failure."""
     global cached_data, last_fetch_time, computed_results_cache, global_results_cache, shops_results_cache
-    import math as _math, json as _json
     from google.oauth2.service_account import Credentials as _Creds
 
     _scopes = ['https://www.googleapis.com/auth/spreadsheets',
@@ -2633,9 +2701,11 @@ def _run_sync():
     else:
         raise RuntimeError('No Google credentials found')
 
+    _t0   = time.time()
     _gc   = gspread.authorize(_creds)
     _ws   = _gc.open(SHEET_NAME).worksheet(WORKSHEET_NAME)
     df    = pd.DataFrame(_ws.get_all_records())
+    print(f"[INFO] Sheets fetch: {len(df)} rows in {time.time() - _t0:.1f}s")
 
     if 'Shop' not in df.columns and 'Location' in df.columns:
         df.rename(columns={'Location': 'Shop'}, inplace=True)
@@ -2655,25 +2725,15 @@ def _run_sync():
     df_out = df[_keep].copy()
     df_out['Date'] = df_out['Date'].dt.strftime('%Y-%m-%d')
     df_out.rename(columns=_APP_TO_SB, inplace=True)
-    records = [
-        {k: (None if isinstance(v, float) and _math.isnan(v) else v)
-         for k, v in row.items()}
-        for row in df_out.to_dict(orient='records')
-    ]
 
-    _hdrs = _sb_headers()
-    requests.delete(
-        f"{SUPABASE_URL}/rest/v1/sales?phone=neq.__NO_MATCH__",
-        headers=_hdrs, timeout=30
-    ).raise_for_status()
-    _BATCH = 500
-    for _i in range(0, len(records), _BATCH):
-        requests.post(
-            f"{SUPABASE_URL}/rest/v1/sales",
-            headers=_hdrs,
-            data=_json.dumps(records[_i:_i + _BATCH]),
-            timeout=60,
-        ).raise_for_status()
+    if not DATABASE_URL:
+        raise RuntimeError(
+            'DATABASE_URL is not set. Sync needs a direct PostgreSQL connection '
+            '— the REST API times out clearing a table this size.'
+        )
+    _t1 = time.time()
+    n_synced = _push_to_supabase_sql(df_out)
+    print(f"[INFO] Supabase push: {time.time() - _t1:.1f}s")
 
     cached_data            = None
     last_fetch_time        = None
@@ -2682,15 +2742,15 @@ def _run_sync():
     shops_results_cache    = None
     _bust_analytics_cache()
 
-    print(f"[INFO] Sync complete: {len(records)} records")
-    return len(records)
+    print(f"[INFO] Sync complete: {n_synced} records in {time.time() - _t0:.1f}s total")
+    return n_synced
 
 
 @app.route('/api/sync', methods=['POST'])
 def sync_to_supabase():
     """Manual sync triggered from the dashboard UI."""
-    if not SUPABASE_KEY:
-        return jsonify({'error': 'SUPABASE_KEY env var not set'}), 500
+    if not DATABASE_URL:
+        return jsonify({'error': 'DATABASE_URL env var not set'}), 500
     try:
         n = _run_sync()
         return jsonify({'success': True, 'records_synced': n})
@@ -2709,8 +2769,8 @@ def cron_sync():
         auth = request.headers.get('Authorization', '')
         if auth != f'Bearer {cron_secret}':
             return jsonify({'error': 'Unauthorized'}), 401
-    if not SUPABASE_KEY:
-        return jsonify({'error': 'SUPABASE_KEY not set'}), 500
+    if not DATABASE_URL:
+        return jsonify({'error': 'DATABASE_URL not set'}), 500
     try:
         n = _run_sync()
         return jsonify({'success': True, 'records_synced': n,
