@@ -756,28 +756,34 @@
 
                     <!-- ══ TAB: DATA & SETTINGS ══ -->
                     <div class="tab-pane" id="tab-data" style="display:none;">
-                        <!-- Supabase Sync -->
-                        <div class="upload-section" style="border-left-color:#6366f1;">
-                            <h3>🔄 Sync from Google Sheets → Supabase</h3>
-                            <p style="font-size:13px; color:#64748b; margin-bottom:14px;">
-                                Pull the latest data from Google Sheets and push it to Supabase. The dashboard will load from Supabase (fast) after syncing.
-                            </p>
-                            <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
-                                <button id="syncBtn" onclick="syncToSupabase()" class="export-btn" style="background:linear-gradient(135deg,#6366f1,#4f46e5); box-shadow:0 2px 6px rgba(99,102,241,0.3);">
-                                    ⚡ Sync Now
-                                </button>
-                                <span id="syncStatus" style="font-size:13px; color:#64748b;"></span>
-                            </div>
-                        </div>
-
                         <div class="upload-section">
-                            <h3>📤 Upload New Data</h3>
+                            <h3>📤 Add New Sales Data</h3>
+                            <p style="font-size:13px; color:#64748b; margin-bottom:14px;">
+                                Upload a CSV of new sales. Rows are appended to Supabase and the dashboard totals are rebuilt straight away.
+                            </p>
                             <div class="upload-form">
                                 <input type="file" id="csvFile" accept=".csv" onchange="handleFileSelect()">
                                 <button class="upload-btn" id="uploadBtn" onclick="uploadData()" disabled>Upload CSV</button>
                             </div>
                             <div class="upload-status" id="uploadStatus"></div>
-                            <small style="color:#64748b; margin-top:10px; display:block;">CSV must contain columns: Date, First Name, Phone, Price, Shop</small>
+                            <small style="color:#64748b; margin-top:10px; display:block;">
+                                Required columns: Date, First Name, Phone, Price, Shop &nbsp;·&nbsp;
+                                Optional: Gender, Product, Color, Category, Quantity, Total, MARKETING EXPENSE
+                            </small>
+                        </div>
+
+                        <!-- Rebuild analytics after editing rows directly in Supabase -->
+                        <div class="upload-section" style="border-left-color:#6366f1;">
+                            <h3>🧮 Rebuild Dashboard Totals</h3>
+                            <p style="font-size:13px; color:#64748b; margin-bottom:14px;">
+                                Use this after editing or deleting rows directly in the Supabase table editor, so the dashboard picks the changes up.
+                            </p>
+                            <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+                                <button id="recomputeBtn" onclick="recomputeAnalytics()" class="export-btn" style="background:linear-gradient(135deg,#6366f1,#4f46e5); box-shadow:0 2px 6px rgba(99,102,241,0.3);">
+                                    🧮 Rebuild Now
+                                </button>
+                                <span id="recomputeStatus" style="font-size:13px; color:#64748b;"></span>
+                            </div>
                         </div>
                         <button class="refresh-btn" onclick="refreshData()">🔄 Refresh Data</button>
                     </div>
@@ -2774,27 +2780,27 @@
             document.body.removeChild(link);
         }
 
-        // ── Supabase Sync ───────────────────────────────────────────
-        async function syncToSupabase() {
-            const btn    = document.getElementById('syncBtn');
-            const status = document.getElementById('syncStatus');
+        // ── Rebuild cached analytics from what is in Supabase ───────
+        async function recomputeAnalytics() {
+            const btn    = document.getElementById('recomputeBtn');
+            const status = document.getElementById('recomputeStatus');
             btn.disabled = true;
-            btn.textContent = '⏳ Syncing…';
-            status.textContent = 'Fetching from Google Sheets (this may take a minute)…';
+            btn.textContent = '⏳ Rebuilding…';
+            status.textContent = 'Reading Supabase and recalculating (this can take a minute)…';
             status.style.color = '#64748b';
             try {
-                const res  = await fetch('/api/sync', { method: 'POST' });
+                const res  = await fetch('/api/recompute', { method: 'POST' });
                 const data = await res.json();
                 if (data.error) throw new Error(data.error);
-                status.textContent = `✅ Synced ${data.records_synced.toLocaleString()} records. Reloading dashboard…`;
+                status.textContent = `✅ Rebuilt over ${data.total_records.toLocaleString()} records. Reloading…`;
                 status.style.color = '#10b981';
                 setTimeout(() => { loadData(); }, 1200);
             } catch (e) {
-                status.textContent = '❌ Sync failed: ' + e.message;
+                status.textContent = '❌ Rebuild failed: ' + e.message;
                 status.style.color = '#ef4444';
             } finally {
                 btn.disabled = false;
-                btn.textContent = '⚡ Sync Now';
+                btn.textContent = '🧮 Rebuild Now';
             }
         }
 

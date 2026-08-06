@@ -1,6 +1,4 @@
 from flask import Flask, render_template, jsonify, request
-import gspread
-from google.oauth2.service_account import Credentials
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -35,26 +33,6 @@ app.json_provider_class = _NumpyJSONProvider
 app.json = _NumpyJSONProvider(app)
 
 # Configuration
-# Prefer environment variable (Render/Production), fallback to local file only for development
-GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
-
-import base64 as _base64
-
-def _parse_service_account_json(raw):
-    """Parse service account credentials from env var.
-    Accepts either plain JSON or a base64-encoded JSON string."""
-    try:
-        # Try plain JSON first (legacy)
-        return json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        pass
-    # Fall back to base64-encoded JSON (recommended for Vercel)
-    return json.loads(_base64.b64decode(raw).decode('utf-8'))
-JSON_FILE_PATH = os.environ.get("JSON_FILE_PATH", r'C:\Users\Oduor\Downloads\JSON Files\retention-484110-9e4520124486.json')
-
-SHEET_NAME = os.environ.get("SHEET_NAME", 'Customer Database')
-WORKSHEET_NAME = os.environ.get("WORKSHEET_NAME", 'Shops')
-
 # Optional: Configure the start year for analysis. If not set, include all history.
 DATA_START_YEAR_ENV = os.environ.get("DATA_START_YEAR")
 try:
@@ -178,7 +156,11 @@ def _load_from_supabase():
     """
     import psycopg2 # type: ignore
 
-    CHUNK = 50_000
+    # 10k is what this instance actually sustains. Measured on the live project:
+    # a 10k chunk returns in ~5s, while 50k routinely dies with 'server closed
+    # the connection unexpectedly'. Bigger chunks are not faster here, they just
+    # fail.
+    CHUNK = int(os.environ.get('SUPABASE_READ_CHUNK', 10_000))
     ATTEMPTS = 3
     frames, last_id, cols = [], 0, None
 
@@ -254,53 +236,8 @@ def _ensure_supabase_tables():
                     result     JSONB NOT NULL,
                     updated_at TIMESTAMPTZ DEFAULT NOW()
                 )""")
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS sync_state (
-                    id             INTEGER PRIMARY KEY DEFAULT 1,
-                    last_sheet_row INTEGER NOT NULL DEFAULT 0,
-                    last_synced_at TIMESTAMPTZ DEFAULT NOW()
-                )""")
     finally:
         conn.close()
-
-
-def _get_last_sheet_row():
-    """Last Google Sheets row number already synced (0 = nothing synced yet)."""
-    import psycopg2 # type: ignore
-    conn = psycopg2.connect(DATABASE_URL, **_PG_KWARGS)
-    try:
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("SELECT last_sheet_row FROM sync_state WHERE id = 1")
-            row = cur.fetchone()
-            return row[0] if row else 0
-    finally:
-        conn.close()
-
-
-def _set_last_sheet_row(n):
-    import psycopg2 # type: ignore
-    conn = psycopg2.connect(DATABASE_URL, **_PG_KWARGS)
-    try:
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO sync_state (id, last_sheet_row, last_synced_at)
-                VALUES (1, %s, NOW())
-                ON CONFLICT (id) DO UPDATE
-                  SET last_sheet_row = EXCLUDED.last_sheet_row,
-                      last_synced_at = NOW()""", (n,))
-    finally:
-        conn.close()
-
-
-def _col_letter(n):
-    """1 -> A, 26 -> Z, 27 -> AA."""
-    s = ''
-    while n > 0:
-        n, r = divmod(n - 1, 26)
-        s = chr(65 + r) + s
-    return s
 
 
 def _push_to_supabase_sql(df_sb, truncate=True):
@@ -442,192 +379,57 @@ def _bust_analytics_cache():
 
 
 def get_customer_data():
-    """Fetch and process customer data from Google Sheets with persistent caching"""
+    """Return the full sales dataset from Supabase.
+
+    Supabase is the source of truth. Google Sheets is no longer involved: it was
+    only ever a data-entry surface, and keeping the two in step is what caused
+    the timeouts, lock contention and date-range mismatches this dashboard used
+    to suffer from. New rows arrive via POST /api/upload.
+
+    The on-disk CSV is a last-resort fallback so a transient Supabase blip shows
+    slightly stale numbers rather than an error page.
+    """
     global cached_data, last_fetch_time
-    
-    # 1. Return in-memory cache if valid
+
     if cached_data is not None and last_fetch_time is not None:
         if time.time() - last_fetch_time < CACHE_DURATION:
             print("[DEBUG] Returning in-memory cached data")
             return cached_data
-    
-    # 2. Try Supabase via direct SQL (fast path — single query, ~2 seconds)
-    if DATABASE_URL:
-        try:
-            df_sb = _load_from_supabase()
-            cached_data = df_sb
-            last_fetch_time = time.time()
-            return cached_data
-        except Exception as e:
-            print(f"[WARNING] Supabase unavailable, falling back to Sheets: {e}")
 
-    # 3. Try to load from persistent cache if available and memory cache is empty
-    if cached_data is None and os.path.exists(CACHE_FILE):
-        try:
-            print("[INFO] Loading from persistent cache...")
-            df_persistent = pd.read_csv(CACHE_FILE, low_memory=False)
-            df_persistent['Date'] = pd.to_datetime(df_persistent['Date'], errors='coerce')
-            cached_data = df_persistent
-            last_fetch_time = os.path.getmtime(CACHE_FILE)
-            print(f"[INFO] Loaded {len(df_persistent)} records from persistent cache")
-            
-            # If the file is very fresh, just return it
-            if time.time() - last_fetch_time < CACHE_DURATION:
-                return cached_data
-        except Exception as e:
-            print(f"[ERROR] Failed to load persistent cache: {e}")
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL is not set — the dashboard cannot reach Supabase. "
+            "Set it in your .env locally and in the Vercel environment variables."
+        )
 
     try:
-        # Fix: Clear any bad SSL env vars (e.g. CURL_CA_BUNDLE set by PostgreSQL install)
-        # that break HTTPS calls to Google APIs, and use Python's own certifi bundle instead.
-        import certifi
-        for _bad_ev in ('CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE'):
-            os.environ.pop(_bad_ev, None)
-        os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
-        os.environ['SSL_CERT_FILE']      = certifi.where()
-        print(f"[INFO] SSL CA bundle set to: {certifi.where()}")
-
-        print("[INFO] Fetching fresh data from Google Sheets...")
-        # Setup Google Sheets authentication
-        SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 
-                  'https://www.googleapis.com/auth/drive']
-        
-        if os.path.exists(JSON_FILE_PATH):
-            # Local development
-            creds = Credentials.from_service_account_file(JSON_FILE_PATH, scopes=SCOPES)
-        elif GOOGLE_SERVICE_ACCOUNT_JSON:
-            # Render / cloud deployment
-            creds_info = _parse_service_account_json(GOOGLE_SERVICE_ACCOUNT_JSON)
-            creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
-        else:
-            raise ValueError("No Google credentials found.")
-        
-        # Create an authorized session from google-auth
-        from google.auth.transport.requests import AuthorizedSession
-        import socket
-        
-        # Set a global socket timeout as a safety net
-        socket.setdefaulttimeout(120)
-        
-        # Custom timeout adapter
-        class TimeoutHTTPAdapter(HTTPAdapter):
-            def __init__(self, timeout=None, *args, **kwargs):
-                self.timeout = timeout
-                super().__init__(*args, **kwargs)
-            
-            def send(self, request, **kwargs):
-                # Ensure timeout is always applied, even if passed as None or omitted
-                if kwargs.get('timeout') is None:
-                    kwargs['timeout'] = self.timeout
-                return super().send(request, **kwargs)
-        
-        # Increase retries and backoff significantly to handle unstable connections
-        retry_strategy = Retry(
-            total=5,  
-            backoff_factor=2,  # Wait 2s, 4s, 8s, 16s...
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "OPTIONS", "POST"],
-            raise_on_status=False
-        )
-        
-        # Create the session with timeout adapter
-        authorized_session = AuthorizedSession(creds)
-        
-        # Use custom adapter with 90 second timeout
-        timeout_adapter = TimeoutHTTPAdapter(timeout=90, max_retries=retry_strategy)
-        authorized_session.mount("https://", timeout_adapter)
-        authorized_session.mount("http://", timeout_adapter)
-        
-        # Initialize gspread with the authorized session
-        client = gspread.Client(auth=creds)
-        client.session = authorized_session
-        # CRITICAL: Set explicit timeout on gspread client to prevent it from passing None
-        client.http_client.timeout = 90
-        
-        print(f"[INFO] Opening spreadsheet '{SHEET_NAME}'...")
-        # Open the spreadsheet and specific worksheet
-        spreadsheet = client.open(SHEET_NAME)
-        worksheet = spreadsheet.worksheet(WORKSHEET_NAME)
-        
-        # Get all data
-        data = worksheet.get_all_records()
-        df = pd.DataFrame(data)
-        
-        # Handle column naming mismatch (Sheet uses 'Location', code uses 'Shop')
-        if 'Shop' not in df.columns and 'Location' in df.columns:
-            print("[INFO] Renaming 'Location' column to 'Shop'")
-            df.rename(columns={'Location': 'Shop'}, inplace=True)
-            
-        if 'Gender' not in df.columns and 'Female' in df.columns:
-            print("[INFO] Renaming 'Female' column to 'Gender'")
-            df.rename(columns={'Female': 'Gender'}, inplace=True)
-            
-        if 'Shop' in df.columns:
-            # Normalize shop names to Title Case and strip whitespace
-            df['Shop'] = df['Shop'].astype(str).str.strip().str.title()
-            
-        if df.empty:
-            raise ValueError("No data returned from Google Sheets")
-        
-        print(f"[INFO] Successfully loaded {len(df)} records from Google Sheets")
-        
-        # Convert Date column to datetime
-        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-        
-        # Filter out organizations and optionally apply a start year cutoff
-        filters = df['Gender'].astype(str).str.lower().str.strip() != 'organization'
-        if DATA_START_YEAR is not None:
-            filters = filters & (df['Date'].dt.year >= DATA_START_YEAR)
-        df_filtered = df[filters].copy()
-        
-        if df_filtered.empty:
-            raise ValueError("No data matches the filter criteria after processing")
-        
-        # Process prices
-        df_filtered['Price'] = df_filtered['Price'].astype(str).str.replace(r'[^\d.]', '', regex=True)
-        df_filtered['Price'] = pd.to_numeric(df_filtered['Price'], errors='coerce')
-
-        # Process Quantity and Total if present
-        if 'Quantity' in df_filtered.columns:
-            df_filtered['Quantity'] = df_filtered['Quantity'].astype(str).str.replace(r'[^\d.]', '', regex=True)
-            df_filtered['Quantity'] = pd.to_numeric(df_filtered['Quantity'], errors='coerce').fillna(1)
-        if 'Total' in df_filtered.columns:
-            df_filtered['Total'] = df_filtered['Total'].astype(str).str.replace(r'[^\d.]', '', regex=True)
-            df_filtered['Total'] = pd.to_numeric(df_filtered['Total'], errors='coerce')
-        else:
-            # Derive Total from Price × Quantity for backwards compatibility
-            qty = df_filtered['Quantity'] if 'Quantity' in df_filtered.columns else 1
-            df_filtered['Total'] = df_filtered['Price'] * qty
-
-        # Process Marketing Expense if present
-        if 'MARKETING EXPENSE' in df_filtered.columns:
-            df_filtered['MARKETING EXPENSE'] = df_filtered['MARKETING EXPENSE'].astype(str).str.replace(r'[^\d.]', '', regex=True)
-            df_filtered['MARKETING EXPENSE'] = pd.to_numeric(df_filtered['MARKETING EXPENSE'], errors='coerce').fillna(0)
-            
-        # Create customer identifier - Using only Phone number as requested (avoiding name duplicates)
-        df_filtered['Customer_ID'] = df_filtered['Phone'].astype(str).str.strip()
-        
-        # 3. Update memory cache and persistent cache
-        cached_data = df_filtered
+        df = _load_from_supabase()
+        cached_data     = df
         last_fetch_time = time.time()
-        
         try:
-            df_filtered.to_csv(CACHE_FILE, index=False)
-            print("[INFO] Persistent cache updated")
+            df.to_csv(CACHE_FILE, index=False)
         except Exception as e:
-            print(f"[WARNING] Could not save to persistent cache: {e}")
-            
-        return df_filtered
-    
+            print(f"[WARNING] Could not write local fallback cache: {e}")
+        return df
     except Exception as e:
-        print(f"[ERROR] Failed to fetch from Google Sheets: {str(e)}")
-        
-        # 4. Final Fallback: Use whatever we have in memory or on disk
+        print(f"[ERROR] Supabase read failed: {e}")
+
         if cached_data is not None:
-            print("[DEBUG] Falling back to available cached data due to error")
+            print("[WARNING] Serving stale in-memory data")
             return cached_data
-            
-        raise Exception(f"Unable to load data (Connection error and no cache available): {str(e)}")
+
+        if os.path.exists(CACHE_FILE):
+            try:
+                print("[WARNING] Serving stale on-disk cache")
+                df = pd.read_csv(CACHE_FILE, low_memory=False)
+                df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+                cached_data     = df
+                last_fetch_time = os.path.getmtime(CACHE_FILE)
+                return df
+            except Exception as ce:
+                print(f"[ERROR] Fallback cache unreadable: {ce}")
+
+        raise RuntimeError(f"Unable to load data from Supabase: {e}")
 
 
 def calculate_overview(df):
@@ -2570,7 +2372,7 @@ def export_inactive_customers():
 
 @app.route('/api/refresh-now', methods=['POST'])
 def refresh_now():
-    """Force refresh data from Google Sheets"""
+    """Drop every cache and re-read from Supabase."""
     global cached_data, last_fetch_time, computed_results_cache, global_results_cache, shops_results_cache
     cached_data = None
     last_fetch_time = None
@@ -2706,286 +2508,149 @@ def export_one_time_customers():
         print(f"[TRACEBACK] {traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/upload', methods=['POST'])
-def upload_data():
-    """Upload CSV data and append to Google Sheets"""
-    global cached_data, last_fetch_time
-    
-    try:
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file provided'}), 400
-        
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': 'No file selected'}), 400
-        
-        if not file.filename.endswith('.csv'):
-            return jsonify({'error': 'Only CSV files are allowed'}), 400
-        
-        # Read CSV data
-        csv_data = file.read().decode('utf-8')
-        df_upload = pd.read_csv(io.StringIO(csv_data))
-        
-        # Validate required columns
-        required_columns = ['Date', 'First Name', 'Phone', 'Price', 'Quantity', 'Total', 'Shop']
-        missing_columns = [col for col in required_columns if col not in df_upload.columns]
-        if missing_columns:
-            return jsonify({'error': f'Missing required columns: {", ".join(missing_columns)}'}), 400
-        
-        # Setup Google Sheets authentication
-        SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 
-                  'https://www.googleapis.com/auth/drive']
-        
-        if os.path.exists(JSON_FILE_PATH):
-            # Local development
-            creds = Credentials.from_service_account_file(JSON_FILE_PATH, scopes=SCOPES)
-        elif GOOGLE_SERVICE_ACCOUNT_JSON:
-            # Render / cloud deployment
-            creds_info = _parse_service_account_json(GOOGLE_SERVICE_ACCOUNT_JSON)
-            creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
-        else:
-            raise ValueError("No Google credentials found.")
-        client = gspread.authorize(creds)
-        
-        # Open the spreadsheet and worksheet
-        spreadsheet = client.open(SHEET_NAME)
-        worksheet = spreadsheet.worksheet(WORKSHEET_NAME)
-        
-        # Convert DataFrame to list of lists for gspread
-        # Get existing headers
-        existing_data = worksheet.get_all_records()
-        if existing_data:
-            # Append new data
-            new_rows = df_upload.values.tolist()
-            worksheet.append_rows(new_rows)
-        else:
-            # If sheet is empty, include headers
-            headers = df_upload.columns.tolist()
-            all_data = [headers] + df_upload.values.tolist()
-            worksheet.update(all_data)
-        
-        # Clear cache to force refresh
-        global computed_results_cache, global_results_cache, shops_results_cache
-        cached_data = None
-        last_fetch_time = None
-        computed_results_cache = None
-        global_results_cache   = None
-        shops_results_cache    = None
-        
-        # Remove persistent cache file
-        if os.path.exists(CACHE_FILE):
-            try:
-                os.remove(CACHE_FILE)
-                print(f"[INFO] Removed persistent cache file after upload: {CACHE_FILE}")
-            except Exception as e:
-                print(f"[WARNING] Could not remove persistent cache: {e}")
-        
-        return jsonify({
-            'success': True, 
-            'message': f'Successfully uploaded {len(df_upload)} records',
-            'records_uploaded': len(df_upload)
-        })
-    
-    except Exception as e:
-        import traceback
-        print(f"[ERROR] Upload failed: {str(e)}")
-        print(f"[TRACEBACK] {traceback.format_exc()}")
-        return jsonify({'error': f'Upload failed: {str(e)}'}), 500
+def _refresh_analytics(df=None):
+    """Recompute the dashboard analytics and store them in Supabase.
 
-def _run_sync(full=False):
-    """Pull Google Sheets → push to Supabase → refresh the analytics cache.
-
-    Incremental by default: `sync_state.last_sheet_row` records how far down the
-    sheet we have already read, and only rows below that are fetched and
-    appended. This matters at both ends — it avoids re-uploading a quarter of a
-    million rows, and it avoids re-downloading them from Sheets, which was the
-    slowest part of the whole operation.
-
-    Incremental assumes the sheet is append-only. If historical rows are edited
-    or deleted the row offsets drift, so pass full=True (Sync Now → Full resync)
-    to rebuild the table from scratch.
-
-    Returns a dict describing what happened.
+    The dashboard must never bulk-read `sales` on a page load — free-tier
+    Supabase cannot serve a 250k-row read reliably. Everything that changes the
+    data calls this once, and every page load then reads a single small row.
     """
-    global cached_data, last_fetch_time, computed_results_cache, global_results_cache, shops_results_cache
-    from google.oauth2.service_account import Credentials as _Creds
+    global cached_data, last_fetch_time, computed_results_cache
+    global global_results_cache, shops_results_cache
 
-    if not DATABASE_URL:
-        raise RuntimeError(
-            'DATABASE_URL is not set. Sync needs a direct PostgreSQL connection '
-            '— the REST API times out clearing a table this size.'
-        )
+    if df is None:
+        df = _load_from_supabase()
 
-    _scopes = ['https://www.googleapis.com/auth/spreadsheets',
-               'https://www.googleapis.com/auth/drive']
-    if os.path.exists(JSON_FILE_PATH):
-        _creds = _Creds.from_service_account_file(JSON_FILE_PATH, scopes=_scopes)
-    elif GOOGLE_SERVICE_ACCOUNT_JSON:
-        _creds = _Creds.from_service_account_info(
-            _parse_service_account_json(GOOGLE_SERVICE_ACCOUNT_JSON), scopes=_scopes)
-    else:
-        raise RuntimeError('No Google credentials found')
-
-    _ensure_supabase_tables()
-
-    _t0   = time.time()
-    _gc   = gspread.authorize(_creds)
-    _ws   = _gc.open(SHEET_NAME).worksheet(WORKSHEET_NAME)
-
-    _last_row = 0 if full else _get_last_sheet_row()
-    _header   = _ws.row_values(1)
-    _sheet_rows = len(_ws.col_values(1))     # includes the header row
-
-    if _last_row <= 1 or _last_row > _sheet_rows:
-        # Never synced, or the sheet shrank (rows deleted) — offsets are no
-        # longer trustworthy, so rebuild from scratch.
-        if _last_row > _sheet_rows:
-            print(f"[INFO] Sheet shrank ({_sheet_rows} rows < last synced "
-                  f"{_last_row}); falling back to a full resync")
-        full = True
-        _last_row = 0
-
-    if full:
-        df = pd.DataFrame(_ws.get_all_records())
-        _new_last_row = len(df) + 1          # +1 for the header
-        print(f"[INFO] Sheets full fetch: {len(df)} rows in {time.time() - _t0:.1f}s")
-    else:
-        _rng  = f"A{_last_row + 1}:{_col_letter(len(_header))}{_sheet_rows}"
-        _vals = _ws.get(_rng) if _sheet_rows > _last_row else []
-        # Short rows come back truncated; pad so the DataFrame lines up.
-        _vals = [r + [''] * (len(_header) - len(r)) for r in _vals]
-        df    = pd.DataFrame(_vals, columns=_header)
-        _new_last_row = _last_row + len(df)
-        print(f"[INFO] Sheets incremental fetch: {len(df)} new row(s) "
-              f"(range {_rng}) in {time.time() - _t0:.1f}s")
-
-        if df.empty:
-            _set_last_sheet_row(_new_last_row)
-            print("[INFO] No new rows — nothing to sync")
-            return {'mode': 'incremental', 'new_records': 0,
-                    'skipped': True, 'seconds': round(time.time() - _t0, 1)}
-
-    if 'Shop' not in df.columns and 'Location' in df.columns:
-        df.rename(columns={'Location': 'Shop'}, inplace=True)
-    if 'Gender' not in df.columns and 'Female' in df.columns:
-        df.rename(columns={'Female': 'Gender'}, inplace=True)
-    if 'Shop' in df.columns:
-        df['Shop'] = df['Shop'].astype(str).str.strip().str.title()
-    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-    df = df[df['Gender'].astype(str).str.lower().str.strip() != 'organization'].copy()
-    for _col in ('Price', 'Quantity', 'Total', 'MARKETING EXPENSE'):
-        if _col in df.columns:
-            df[_col] = pd.to_numeric(
-                df[_col].astype(str).str.replace(r'[^\d.]', '', regex=True),
-                errors='coerce')
-
-    _keep  = [c for c in _APP_TO_SB if c in df.columns]
-    df_out = df[_keep].copy()
-    df_out['Date'] = df_out['Date'].dt.strftime('%Y-%m-%d')
-    df_out.rename(columns=_APP_TO_SB, inplace=True)
-
-    _t1 = time.time()
-    n_synced = _push_to_supabase_sql(df_out, truncate=full)
-    _set_last_sheet_row(_new_last_row)
-    print(f"[INFO] Supabase push: {time.time() - _t1:.1f}s")
-
+    cached_data            = df
+    last_fetch_time        = time.time()
     computed_results_cache = None
     shops_results_cache    = None
 
-    # Refresh the analytics cache. The dashboard must never bulk-read `sales`
-    # itself — free-tier Supabase cannot serve a 250k-row read reliably (burst
-    # IO gets exhausted and reads start timing out), so sync owns that cost.
-    #
-    # A full sync already holds every row in memory. An incremental sync only
-    # holds the new ones, so it has to read the rest back to recompute totals.
-    df['Customer_ID'] = df['Phone'].astype(str).str.strip()
-    if 'Quantity' in df.columns:
-        df['Quantity'] = df['Quantity'].fillna(0).replace(0, 1)
-    for _c in ('Price', 'Total', 'MARKETING EXPENSE'):
-        if _c in df.columns:
-            df[_c] = df[_c].fillna(0)
-
-    if full:
-        df_all = df
-    else:
-        try:
-            df_all = _load_from_supabase()
-        except Exception as _e:
-            # Rows are safely stored; only the cached analytics are stale.
-            print(f"[WARNING] Could not reload for analytics ({_e}); busting cache")
-            _bust_analytics_cache()
-            cached_data = last_fetch_time = None
-            return {'mode': 'incremental', 'new_records': n_synced,
-                    'analytics': 'deferred',
-                    'seconds': round(time.time() - _t0, 1)}
-
-    df = df_all
-    cached_data     = df
-    last_fetch_time = time.time()
-
-    _t2 = time.time()
-    try:
-        _results = _compute_global_results(df)
-        _results['cache_status'] = {
-            'last_updated': datetime.fromtimestamp(last_fetch_time).strftime('%Y-%m-%d %H:%M:%S'),
-            'type': 'analytics_cache',
-        }
-        _write_analytics_cache(_results)
-        print(f"[INFO] Analytics computed + cached: {time.time() - _t2:.1f}s")
-    except Exception as _e:
-        # A failed computation must not lose the freshly synced rows; just clear
-        # the stale cache so the next request recomputes.
-        print(f"[WARNING] Analytics precompute failed ({_e}); busting cache instead")
-        _bust_analytics_cache()
-
-    _mode = 'full' if full else 'incremental'
-    print(f"[INFO] Sync complete ({_mode}): {n_synced} record(s) "
-          f"in {time.time() - _t0:.1f}s total")
-    return {'mode': _mode, 'new_records': n_synced, 'total_records': len(df),
-            'seconds': round(time.time() - _t0, 1)}
+    results = _compute_global_results(df)
+    results['cache_status'] = {
+        'last_updated': datetime.fromtimestamp(last_fetch_time).strftime('%Y-%m-%d %H:%M:%S'),
+        'type': 'analytics_cache',
+    }
+    _write_analytics_cache(results)
+    print(f"[INFO] Analytics refreshed over {len(df)} records")
+    return len(df)
 
 
-@app.route('/api/sync', methods=['POST'])
-def sync_to_supabase():
-    """Manual sync from the dashboard UI. Incremental unless ?full=true."""
+@app.route('/api/upload', methods=['POST'])
+def upload_data():
+    """Append CSV rows straight into Supabase, then refresh the analytics."""
     if not DATABASE_URL:
         return jsonify({'error': 'DATABASE_URL env var not set'}), 500
-    full = (request.args.get('full', '').lower() in ('1', 'true', 'yes')
-            or (request.get_json(silent=True) or {}).get('full') is True)
+
     try:
-        result = _run_sync(full=full)
-        # records_synced is kept for the existing frontend.
-        return jsonify({'success': True,
-                        'records_synced': result.get('new_records', 0),
-                        **result})
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+        if not file.filename.lower().endswith('.csv'):
+            return jsonify({'error': 'Only CSV files are allowed'}), 400
+
+        df_up = pd.read_csv(io.StringIO(file.read().decode('utf-8-sig')))
+
+        # Accept the same column aliases the old Sheets import did.
+        if 'Shop' not in df_up.columns and 'Location' in df_up.columns:
+            df_up.rename(columns={'Location': 'Shop'}, inplace=True)
+        if 'Gender' not in df_up.columns and 'Female' in df_up.columns:
+            df_up.rename(columns={'Female': 'Gender'}, inplace=True)
+
+        required = ['Date', 'First Name', 'Phone', 'Price', 'Shop']
+        missing = [c for c in required if c not in df_up.columns]
+        if missing:
+            return jsonify({
+                'error': f'Missing required columns: {", ".join(missing)}'
+            }), 400
+
+        _ensure_supabase_tables()
+
+        # Same cleaning the dashboard applies to everything else, so uploaded
+        # rows are indistinguishable from rows already in the table.
+        df_up['Date'] = pd.to_datetime(df_up['Date'], errors='coerce')
+        bad_dates = int(df_up['Date'].isna().sum())
+        df_up = df_up.dropna(subset=['Date']).copy()
+        if df_up.empty:
+            return jsonify({'error': 'No rows with a valid Date were found'}), 400
+
+        if 'Shop' in df_up.columns:
+            df_up['Shop'] = df_up['Shop'].astype(str).str.strip().str.title()
+        if 'Gender' in df_up.columns:
+            df_up = df_up[
+                df_up['Gender'].astype(str).str.lower().str.strip() != 'organization'
+            ].copy()
+
+        for col in ('Price', 'Quantity', 'Total', 'MARKETING EXPENSE'):
+            if col in df_up.columns:
+                df_up[col] = pd.to_numeric(
+                    df_up[col].astype(str).str.replace(r'[^\d.]', '', regex=True),
+                    errors='coerce')
+        if 'Quantity' not in df_up.columns:
+            df_up['Quantity'] = 1
+        df_up['Quantity'] = df_up['Quantity'].fillna(1).replace(0, 1)
+        if 'Total' not in df_up.columns:
+            df_up['Total'] = df_up['Price'] * df_up['Quantity']
+        df_up['Total'] = df_up['Total'].fillna(df_up['Price'] * df_up['Quantity'])
+
+        keep   = [c for c in _APP_TO_SB if c in df_up.columns]
+        df_out = df_up[keep].copy()
+        df_out['Date'] = df_out['Date'].dt.strftime('%Y-%m-%d')
+        df_out.rename(columns=_APP_TO_SB, inplace=True)
+
+        n_added = _push_to_supabase_sql(df_out, truncate=False)
+
+        # Recompute from the working set we already have plus the new rows.
+        # Re-reading the whole table back out of Supabase just to add a handful
+        # of rows is the slow, failure-prone path — avoid it when we can.
+        total = None
+        try:
+            df_prev = get_customer_data()
+            if df_prev is not None and not df_prev.empty:
+                df_new = df_up.copy()
+                df_new['Customer_ID'] = df_new['Phone'].astype(str).str.strip()
+                total = _refresh_analytics(
+                    pd.concat([df_prev, df_new], ignore_index=True))
+        except Exception as e:
+            print(f"[WARNING] Could not extend the working set ({e}); "
+                  f"falling back to a full reload")
+        if total is None:
+            total = _refresh_analytics()
+
+        msg = f'Added {n_added} record(s). Dashboard now covers {total} records.'
+        if bad_dates:
+            msg += f' ({bad_dates} row(s) skipped — unreadable Date.)'
+        return jsonify({'success': True, 'message': msg,
+                        'records_uploaded': n_added,
+                        'rows_skipped': bad_dates,
+                        'total_records': total})
+
     except Exception as e:
         import traceback
-        print(f"[ERROR] Sync failed: {traceback.format_exc()}")
-        return jsonify({'error': str(e)}), 500
+        print(f"[ERROR] Upload failed: {traceback.format_exc()}")
+        return jsonify({'error': f'Upload failed: {str(e)}'}), 500
 
 
-@app.route('/api/cron', methods=['GET'])
-def cron_sync():
-    """Vercel Cron Job endpoint — called automatically on schedule.
-    Vercel sends Authorization: Bearer <CRON_SECRET> with every cron request."""
-    cron_secret = os.environ.get('CRON_SECRET')
-    if cron_secret:
-        auth = request.headers.get('Authorization', '')
-        if auth != f'Bearer {cron_secret}':
-            return jsonify({'error': 'Unauthorized'}), 401
+@app.route('/api/recompute', methods=['POST'])
+def recompute_analytics():
+    """Rebuild the cached analytics from whatever is currently in Supabase.
+
+    Use after editing rows directly in the Supabase table editor.
+    """
     if not DATABASE_URL:
-        return jsonify({'error': 'DATABASE_URL not set'}), 500
+        return jsonify({'error': 'DATABASE_URL env var not set'}), 500
     try:
-        result = _run_sync(full=False)
-        return jsonify({'success': True,
-                        'records_synced': result.get('new_records', 0),
-                        'synced_at': datetime.utcnow().isoformat(),
-                        **result})
+        _ensure_supabase_tables()
+        total = _refresh_analytics()
+        return jsonify({'success': True, 'total_records': total,
+                        'message': f'Analytics rebuilt over {total} records.'})
     except Exception as e:
         import traceback
-        print(f"[ERROR] Cron sync failed: {traceback.format_exc()}")
+        print(f"[ERROR] Recompute failed: {traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5002))

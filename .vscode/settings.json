@@ -2,16 +2,27 @@
     "cSpell.words": [
         "Busia",
         "cumcount",
+        "datname",
+        "EBUSY",
         "ELYSE",
         "FABELA",
         "gethostname",
+        "hdrs",
+        "ILIKE",
+        "materialising",
+        "PGRES",
+        "pooler",
+        "Postg",
         "Rongai",
         "SAFIRI",
         "setdefaulttimeout",
+        "SQLSTATE",
+        "Supavisor",
         "Trendline",
         "txns",
         "vdays",
         "Vercel",
-        "vnum"
+        "vnum",
+        "winback"
     ]
 }
