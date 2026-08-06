@@ -156,12 +156,12 @@ def _load_from_supabase():
     """
     import psycopg2 # type: ignore
 
-    # 10k is what this instance actually sustains. Measured on the live project:
-    # a 10k chunk returns in ~5s, while 50k routinely dies with 'server closed
-    # the connection unexpectedly'. Bigger chunks are not faster here, they just
-    # fail.
-    CHUNK = int(os.environ.get('SUPABASE_READ_CHUNK', 10_000))
-    ATTEMPTS = 3
+    # Measured on the live project: 4k-8k row chunks come back in 2-6s, while
+    # anything larger regularly dies with 'SSL error: unexpected eof' or
+    # 'server closed the connection unexpectedly'. Timings are erratic rather
+    # than cleanly size-bound, so keep chunks small and lean on the retries.
+    CHUNK = int(os.environ.get('SUPABASE_READ_CHUNK', 5_000))
+    ATTEMPTS = 5
     frames, last_id, cols = [], 0, None
 
     while True:
@@ -396,40 +396,54 @@ def get_customer_data():
             print("[DEBUG] Returning in-memory cached data")
             return cached_data
 
+    # 2. On-disk working copy.
+    #
+    # Deliberately preferred over re-reading Supabase. Pulling ~259k rows back
+    # out of the pooler is slow and unreliable (measured: erratic, 2k rows can
+    # take 30s, and full reads regularly die with 'SSL error: unexpected eof'),
+    # so we only pay that cost when we have nothing local. Every write path
+    # updates this file alongside Supabase, so it does not drift: uploads append
+    # to both, and _refresh_analytics rewrites it.
+    if os.path.exists(CACHE_FILE):
+        try:
+            df = pd.read_csv(CACHE_FILE, low_memory=False)
+            df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+            if not df.empty:
+                cached_data     = df
+                last_fetch_time = os.path.getmtime(CACHE_FILE)
+                print(f"[INFO] Loaded {len(df)} records from local working copy")
+                return df
+        except Exception as e:
+            print(f"[WARNING] Local working copy unreadable ({e}); reading Supabase")
+
     if not DATABASE_URL:
         raise RuntimeError(
             "DATABASE_URL is not set — the dashboard cannot reach Supabase. "
             "Set it in your .env locally and in the Vercel environment variables."
         )
 
+    # 3. Refill from Supabase (authoritative, but the slow path).
     try:
         df = _load_from_supabase()
         cached_data     = df
         last_fetch_time = time.time()
-        try:
-            df.to_csv(CACHE_FILE, index=False)
-        except Exception as e:
-            print(f"[WARNING] Could not write local fallback cache: {e}")
+        _save_working_copy(df)
         return df
     except Exception as e:
         print(f"[ERROR] Supabase read failed: {e}")
-
         if cached_data is not None:
             print("[WARNING] Serving stale in-memory data")
             return cached_data
-
-        if os.path.exists(CACHE_FILE):
-            try:
-                print("[WARNING] Serving stale on-disk cache")
-                df = pd.read_csv(CACHE_FILE, low_memory=False)
-                df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-                cached_data     = df
-                last_fetch_time = os.path.getmtime(CACHE_FILE)
-                return df
-            except Exception as ce:
-                print(f"[ERROR] Fallback cache unreadable: {ce}")
-
         raise RuntimeError(f"Unable to load data from Supabase: {e}")
+
+
+def _save_working_copy(df):
+    """Persist the working copy that get_customer_data() reads on the next hit."""
+    try:
+        df.to_csv(CACHE_FILE, index=False)
+        print(f"[INFO] Local working copy updated ({len(df)} records)")
+    except Exception as e:
+        print(f"[WARNING] Could not write local working copy: {e}")
 
 
 def calculate_overview(df):
@@ -2525,6 +2539,7 @@ def _refresh_analytics(df=None):
     last_fetch_time        = time.time()
     computed_results_cache = None
     shops_results_cache    = None
+    _save_working_copy(df)
 
     results = _compute_global_results(df)
     results['cache_status'] = {
