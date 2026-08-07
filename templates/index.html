@@ -759,11 +759,11 @@
                         <div class="upload-section">
                             <h3>📤 Add New Sales Data</h3>
                             <p style="font-size:13px; color:#64748b; margin-bottom:14px;">
-                                Upload a CSV of new sales. Rows are appended to Supabase and the dashboard totals are rebuilt straight away.
+                                Upload an Excel (.xlsx) or CSV file of new sales. Rows are appended to Supabase and the dashboard totals are rebuilt straight away.
                             </p>
                             <div class="upload-form">
-                                <input type="file" id="csvFile" accept=".csv" onchange="handleFileSelect()">
-                                <button class="upload-btn" id="uploadBtn" onclick="uploadData()" disabled>Upload CSV</button>
+                                <input type="file" id="csvFile" accept=".csv,.xlsx,.xls" onchange="handleFileSelect()">
+                                <button class="upload-btn" id="uploadBtn" onclick="uploadData()" disabled>Upload File</button>
                             </div>
                             <div class="upload-status" id="uploadStatus"></div>
                             <small style="color:#64748b; margin-top:10px; display:block;">

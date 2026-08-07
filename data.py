@@ -121,6 +121,19 @@ def _sb_headers():
 _SALES_COLS = ("date,first_name,gender,phone,product,color,category,shop,"
                "price,quantity,total,month,month_year,quarter,marketing_expense")
 
+
+def _customer_id(phone_series):
+    """Normalise a phone column into the customer key.
+
+    Phone survives a CSV round-trip as a float ('794761620' -> 794761620.0), so
+    the same customer read from the local working copy and from Supabase would
+    otherwise produce two different keys and be counted as two people. Repeat
+    -customer rates are the whole point of this dashboard, so the key has to be
+    stable no matter which source the rows came from.
+    """
+    return (phone_series.astype(str).str.strip()
+            .str.replace(r'\.0$', '', regex=True))
+
 # Shared psycopg2 connect options.
 #
 # keepalives are the important part: when Supavisor drops a connection the
@@ -214,7 +227,7 @@ def _load_from_supabase():
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     if 'Quantity' in df.columns:
         df['Quantity'] = df['Quantity'].replace(0, 1)
-    df['Customer_ID'] = df['Phone'].astype(str).str.strip()
+    df['Customer_ID'] = _customer_id(df['Phone'])
     print(f"[INFO] Loaded {len(df)} records from Supabase (direct SQL)")
     return df
 
@@ -408,6 +421,9 @@ def get_customer_data():
         try:
             df = pd.read_csv(CACHE_FILE, low_memory=False)
             df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+            # Rebuild the key rather than trusting the round-tripped column.
+            if 'Phone' in df.columns:
+                df['Customer_ID'] = _customer_id(df['Phone'])
             if not df.empty:
                 cached_data     = df
                 last_fetch_time = os.path.getmtime(CACHE_FILE)
@@ -2564,10 +2580,16 @@ def upload_data():
         file = request.files['file']
         if file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
-        if not file.filename.lower().endswith('.csv'):
-            return jsonify({'error': 'Only CSV files are allowed'}), 400
-
-        df_up = pd.read_csv(io.StringIO(file.read().decode('utf-8-sig')))
+        name = file.filename.lower()
+        if name.endswith('.csv'):
+            df_up = pd.read_csv(io.StringIO(file.read().decode('utf-8-sig')))
+        elif name.endswith(('.xlsx', '.xls')):
+            # Phone must stay a string — Excel stores it as a number and would
+            # otherwise turn 0712345678 into 712345678.0 and break customer
+            # matching, since repeat visits are keyed on the phone number.
+            df_up = pd.read_excel(file, dtype={'Phone': str})
+        else:
+            return jsonify({'error': 'Upload a .csv or .xlsx file'}), 400
 
         # Accept the same column aliases the old Sheets import did.
         if 'Shop' not in df_up.columns and 'Location' in df_up.columns:
@@ -2626,7 +2648,7 @@ def upload_data():
             df_prev = get_customer_data()
             if df_prev is not None and not df_prev.empty:
                 df_new = df_up.copy()
-                df_new['Customer_ID'] = df_new['Phone'].astype(str).str.strip()
+                df_new['Customer_ID'] = _customer_id(df_new['Phone'])
                 total = _refresh_analytics(
                     pd.concat([df_prev, df_new], ignore_index=True))
         except Exception as e:
