@@ -2689,6 +2689,252 @@ def recompute_analytics():
         print(f"[ERROR] Recompute failed: {traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
+
+
+def _location_month_options(df, shop=None):
+    """Months that actually have data, newest first, as [{value,label}]."""
+    d = df.dropna(subset=['Date'])
+    if shop and str(shop).lower() != 'all':
+        d = d[d['Shop'].astype(str).str.strip().str.lower() == str(shop).strip().lower()]
+    if d.empty:
+        return []
+    keys = sorted(d['Date'].dt.strftime('%Y-%m').unique(), reverse=True)
+    return [{'value': k,
+             'label': pd.Period(k, freq='M').strftime('%B %Y')} for k in keys]
+
+
+def _calculate_location_metrics(df, shop, month, scope='shop',
+                                top_n=10, best_n=50):
+    """Per-location, per-month metrics: spend, fast movers, best customers,
+    retention.
+
+    Mirrors the four sheets of the KTDA metrics workbook so a location report
+    can be read straight off the dashboard instead of being rebuilt by hand.
+
+    `scope` decides what counts as a returning customer:
+      'shop' — seen at THIS location before the month (a location's own history)
+      'all'  — seen at ANY location before the month (first-ever visit)
+    """
+    df = df.dropna(subset=['Date']).copy()
+
+    shop_key = str(shop).strip().lower()
+    shop_df = df[df['Shop'].astype(str).str.strip().str.lower() == shop_key]
+    if shop_df.empty:
+        return None
+
+    period = pd.Period(str(month), freq='M')
+    start, end = period.start_time, period.end_time
+    m = shop_df[(shop_df['Date'] >= start) & (shop_df['Date'] <= end)].copy()
+    if m.empty:
+        return None
+
+    has_product = 'Product' in m.columns
+    has_gender = 'Gender' in m.columns
+    if 'Quantity' not in m.columns:
+        m['Quantity'] = 1
+    m['Quantity'] = pd.to_numeric(m['Quantity'], errors='coerce').fillna(1)
+    m['Total'] = pd.to_numeric(m['Total'], errors='coerce').fillna(0)
+
+    def money(x):
+        return round(float(x), 2)
+
+    # ── 1. Spend metrics ─────────────────────────────────────────────────────
+    per_cust = m.groupby('Customer_ID')['Total'].sum()
+    revenue = m['Total'].sum()
+    spend = {
+        'totalTransactions': int(len(m)),
+        'uniqueCustomers': int(m['Customer_ID'].nunique()),
+        'totalRevenue': money(revenue),
+        'avgPerTransaction': money(m['Total'].mean()),
+        'minTransaction': money(m['Total'].min()),
+        'maxTransaction': money(m['Total'].max()),
+        'avgPerCustomer': money(per_cust.mean()),
+        'medianPerCustomer': money(per_cust.median()),
+        'highestCustomerSpend': money(per_cust.max()),
+        'lowestCustomerSpend': money(per_cust.min()),
+    }
+
+    by_product = []
+    if has_product:
+        g = m.groupby('Product').agg(
+            units=('Quantity', 'sum'),
+            transactions=('Total', 'size'),
+            revenue=('Total', 'sum'),
+        ).reset_index().sort_values('revenue', ascending=False)
+        for _, r in g.iterrows():
+            trx = int(r['transactions'])
+            by_product.append({
+                'product': str(r['Product']),
+                'units': int(r['units']),
+                'transactions': trx,
+                'revenue': money(r['revenue']),
+                'avgPerTransaction': money(r['revenue'] / trx) if trx else 0,
+            })
+
+    # ── 2. Fast moving products ──────────────────────────────────────────────
+    fast_movers, daily_trend = [], {'days': [], 'series': []}
+    if has_product:
+        units = m.groupby('Product')['Quantity'].sum().sort_values(ascending=False)
+        total_units = float(units.sum())
+        top = units.head(top_n)
+        # Two denominators, because they answer different questions and the
+        # source workbook used the narrower one: share of everything sold that
+        # month, vs share within the top-10 group itself.
+        top_units = float(top.sum())
+        for rank, (prod, u) in enumerate(top.items(), start=1):
+            fast_movers.append({
+                'rank': rank,
+                'product': str(prod),
+                'units': int(u),
+                'pctOfUnits': round(float(u) / total_units * 100, 1) if total_units else 0,
+                'pctOfTopUnits': round(float(u) / top_units * 100, 1) if top_units else 0,
+            })
+
+        # Day-of-month x top product matrix, so a spike can be traced to a date.
+        top_names = list(top.index)
+        dm = m[m['Product'].isin(top_names)].copy()
+        dm['Day'] = dm['Date'].dt.day
+        days = list(range(1, int(period.days_in_month) + 1))
+        pivot = dm.pivot_table(index='Day', columns='Product', values='Quantity',
+                               aggfunc='sum', fill_value=0)
+        pivot = pivot.reindex(index=days, fill_value=0)
+        daily_trend = {
+            'days': days,
+            'series': [{'product': str(p),
+                        'data': [int(pivot[p].get(d, 0)) for d in days]}
+                       for p in top_names if p in pivot.columns],
+        }
+
+    # ── 3. Best customers ────────────────────────────────────────────────────
+    agg = {
+        'totalSpend': ('Total', 'sum'),
+        'transactions': ('Total', 'size'),
+        'visitDays': ('Date', lambda s: s.dt.normalize().nunique()),
+        'lastVisit': ('Date', 'max'),
+    }
+    if 'First Name' in m.columns:
+        agg['name'] = ('First Name', 'first')
+    if has_gender:
+        agg['gender'] = ('Gender', 'first')
+    if 'Phone' in m.columns:
+        agg['phone'] = ('Phone', 'first')
+
+    b = m.groupby('Customer_ID').agg(**agg).reset_index()
+    b = b.sort_values('totalSpend', ascending=False).head(best_n)
+
+    prods_by_cust = {}
+    if has_product:
+        prods_by_cust = (m[m['Customer_ID'].isin(b['Customer_ID'])]
+                         .groupby('Customer_ID')['Product']
+                         .apply(lambda s: sorted({str(x) for x in s if str(x).strip()}))
+                         .to_dict())
+
+    best_customers = []
+    for rank, (_, r) in enumerate(b.iterrows(), start=1):
+        trx = int(r['transactions'])
+        best_customers.append({
+            'rank': rank,
+            'name': str(r['name']) if 'name' in b.columns and pd.notna(r.get('name')) else '',
+            'phone': _customer_id(pd.Series([r.get('phone', r['Customer_ID'])])).iloc[0],
+            'gender': str(r['gender']) if 'gender' in b.columns and pd.notna(r.get('gender')) else '',
+            'totalSpend': money(r['totalSpend']),
+            'transactions': trx,
+            'visitDays': int(r['visitDays']),
+            'avgPerTransaction': money(r['totalSpend'] / trx) if trx else 0,
+            'lastVisit': r['lastVisit'].strftime('%d %b %Y'),
+            'products': prods_by_cust.get(r['Customer_ID'], []),
+        })
+
+    # ── 4. Retention ─────────────────────────────────────────────────────────
+    history = shop_df if scope == 'shop' else df
+    prior = set(history[history['Date'] < start]['Customer_ID'].unique())
+    month_customers = set(m['Customer_ID'].unique())
+
+    returning = month_customers & prior
+    new_custs = month_customers - prior
+
+    visit_days = m.groupby('Customer_ID')['Date'].apply(lambda s: s.dt.normalize().nunique())
+    repeat_visitors = set(visit_days[visit_days >= 2].index)
+    one_timers = set(visit_days[visit_days == 1].index)
+
+    def rev_of(ids):
+        return money(m[m['Customer_ID'].isin(ids)]['Total'].sum())
+
+    def pct(n, d):
+        return round(n / d * 100, 1) if d else 0
+
+    total_cust = len(month_customers)
+    freq = visit_days.value_counts().sort_index()
+
+    retention = {
+        'scope': scope,
+        'totalCustomers': total_cust,
+        'returningCustomers': len(returning),
+        'returningPct': pct(len(returning), total_cust),
+        'newCustomers': len(new_custs),
+        'newPct': pct(len(new_custs), total_cust),
+        'repeatVisitors': len(repeat_visitors),
+        'repeatVisitorsPct': pct(len(repeat_visitors), total_cust),
+        'oneTimeVisitors': len(one_timers),
+        'oneTimeVisitorsPct': pct(len(one_timers), total_cust),
+        'revenueReturning': rev_of(returning),
+        'revenueReturningPct': pct(rev_of(returning), revenue),
+        'revenueNew': rev_of(new_custs),
+        'revenueNewPct': pct(rev_of(new_custs), revenue),
+        'revenueRepeatVisitors': rev_of(repeat_visitors),
+        'revenueRepeatVisitorsPct': pct(rev_of(repeat_visitors), revenue),
+        'revenueOneTime': rev_of(one_timers),
+        'revenueOneTimePct': pct(rev_of(one_timers), revenue),
+        'visitFrequency': [
+            {'days': int(d), 'customers': int(c), 'pct': pct(int(c), total_cust)}
+            for d, c in freq.items()
+        ],
+    }
+
+    return {
+        'shop': str(m['Shop'].iloc[0]),
+        'month': str(month),
+        'monthLabel': period.strftime('%B %Y'),
+        'spend': spend,
+        'byProduct': by_product,
+        'fastMovers': fast_movers,
+        'dailyTrend': daily_trend,
+        'bestCustomers': best_customers,
+        'retention': retention,
+    }
+
+
+@app.route('/api/location-metrics')
+def location_metrics():
+    """Per-location, per-month metrics for the Shop Performance tab."""
+    shop  = request.args.get('shop')
+    month = request.args.get('month')
+    scope = request.args.get('scope', 'shop')
+    scope = scope if scope in ('shop', 'all') else 'shop'
+    try:
+        df = get_customer_data()
+
+        shops = sorted(
+            s for s in df['Shop'].dropna().astype(str).str.strip().unique() if s
+        )
+        if not shop or shop == 'all':
+            return jsonify({'shops': shops, 'months': _location_month_options(df),
+                            'metrics': None})
+
+        months = _location_month_options(df, shop)
+        if not month or month == 'all':
+            month = months[0]['value'] if months else None
+        if not month:
+            return jsonify({'shops': shops, 'months': [], 'metrics': None})
+
+        metrics = _calculate_location_metrics(df, shop, month, scope=scope)
+        return jsonify({'shops': shops, 'months': months, 'metrics': metrics})
+    except Exception as e:
+        import traceback
+        print(f"[ERROR] /api/location-metrics: {traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5002))
     app.run(host="0.0.0.0", port=port)

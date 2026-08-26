@@ -519,6 +519,98 @@
 
                     <!-- ══ TAB: SHOP PERFORMANCE ══ -->
                     <div class="tab-pane" id="tab-shops" style="display:none;">
+
+                        <!-- ══ Individual Location Metrics (per shop, per month) ══ -->
+                        <div class="tables-section" id="locationMetricsSection" style="margin-bottom:28px;">
+                            <h2>📍 Individual Location Metrics</h2>
+                            <p style="font-size:13px; color:#64748b; margin:-6px 0 14px;">
+                                Spend, fast movers, best customers and retention for one shop in one month.
+                            </p>
+
+                            <div style="background:#f8fafc; padding:13px 18px; border-radius:8px; border:1px solid #e2e8f0; margin-bottom:18px; display:flex; gap:18px; flex-wrap:wrap; align-items:center;">
+                                <span style="font-weight:bold; color:#1e293b;">📍 Location:</span>
+                                <select id="locShopSelect" class="filter-select" onchange="onLocShopChange()"></select>
+
+                                <span style="font-weight:bold; color:#1e293b;">🗓️ Month:</span>
+                                <select id="locMonthSelect" class="filter-select" onchange="loadLocationMetrics()"></select>
+
+                                <span style="font-weight:bold; color:#1e293b;">🔍 New vs returning based on:</span>
+                                <label style="cursor:pointer;"><input type="radio" name="locScope" value="shop" checked onchange="loadLocationMetrics()" style="margin-right:5px;"> This shop's history</label>
+                                <label style="cursor:pointer;"><input type="radio" name="locScope" value="all" onchange="loadLocationMetrics()" style="margin-right:5px;"> Any shop (first-ever visit)</label>
+                            </div>
+
+                            <div id="locStatus" style="color:#64748b; font-size:14px; padding:10px 0;">Select a location to begin.</div>
+
+                            <div id="locContent" style="display:none;">
+                                <!-- Spend summary tiles -->
+                                <div class="overview-grid" id="locSpendTiles" style="margin-bottom:22px;"></div>
+
+                                <!-- Retention -->
+                                <h3 style="margin:26px 0 10px; color:#0f172a;">🔁 Repeat Customers &amp; Retention</h3>
+                                <div style="overflow-x:auto;">
+                                    <table id="locRetentionTable">
+                                        <thead><tr><th>Metric</th><th>Value</th><th>% / Note</th></tr></thead>
+                                        <tbody id="locRetentionBody"></tbody>
+                                    </table>
+                                </div>
+
+                                <!-- Visit frequency -->
+                                <h3 style="margin:26px 0 10px; color:#0f172a;">📆 Visit Frequency Distribution</h3>
+                                <div style="overflow-x:auto;">
+                                    <table id="locFreqTable">
+                                        <thead><tr><th>Visit Days in Month</th><th>Customers</th><th>% of Customers</th></tr></thead>
+                                        <tbody id="locFreqBody"></tbody>
+                                    </table>
+                                </div>
+
+                                <!-- Fast movers -->
+                                <h3 style="margin:26px 0 10px; color:#0f172a;">🚀 Top 10 Fast Moving Products</h3>
+                                <div style="overflow-x:auto;">
+                                    <table id="locFastTable">
+                                        <thead><tr>
+                                            <th>Rank</th><th>Product</th><th>Units Sold</th>
+                                            <th>% of Top 10</th><th>% of All Units</th>
+                                        </tr></thead>
+                                        <tbody id="locFastBody"></tbody>
+                                    </table>
+                                </div>
+
+                                <!-- Daily trend -->
+                                <h3 style="margin:26px 0 10px; color:#0f172a;">📈 Daily Sales Trend — Top 10 Products</h3>
+                                <div style="overflow-x:auto;">
+                                    <table id="locTrendTable" style="font-size:12px;">
+                                        <thead><tr id="locTrendHead"></tr></thead>
+                                        <tbody id="locTrendBody"></tbody>
+                                    </table>
+                                </div>
+
+                                <!-- Best customers -->
+                                <h3 style="margin:26px 0 10px; color:#0f172a;">🏆 Best Customers</h3>
+                                <div style="overflow-x:auto;">
+                                    <table id="locBestTable">
+                                        <thead><tr>
+                                            <th>Rank</th><th>Name</th><th>Phone</th><th>Gender</th>
+                                            <th>Total Spend</th><th>Trx</th><th>Visit Days</th>
+                                            <th>Avg/Trx</th><th>Last Visit</th><th>Products Bought</th>
+                                        </tr></thead>
+                                        <tbody id="locBestBody"></tbody>
+                                    </table>
+                                </div>
+
+                                <!-- Spend by product -->
+                                <h3 style="margin:26px 0 10px; color:#0f172a;">💰 Avg Spend per Transaction by Product</h3>
+                                <div style="overflow-x:auto; max-height:520px;">
+                                    <table id="locProductTable">
+                                        <thead><tr>
+                                            <th>Product</th><th>Units Sold</th><th>Transactions</th>
+                                            <th>Revenue (Ksh)</th><th>Avg / Transaction (Ksh)</th>
+                                        </tr></thead>
+                                        <tbody id="locProductBody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Special Shops (shown by JS for Ktda/Kisii/Busia/Rongai) -->
                         <div id="specialShopsAnalysis" style="display:none; margin-bottom:28px;">
                             <h1 style="margin:0; color:#0f172a; font-size:1.65rem; display:flex; align-items:center; gap:12px; border-bottom:2px solid #e2e8f0; padding-bottom:10px; margin-bottom:18px;">
@@ -1533,6 +1625,160 @@
                 
                 tbody.appendChild(tr);
             });
+        }
+
+
+        // ── Individual Location Metrics (per shop, per month) ───────────────
+        let _locInit = false;
+
+        function _ksh(n) {
+            return 'Ksh ' + (Number(n) || 0).toLocaleString(undefined,
+                { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+        function _num(n) { return (Number(n) || 0).toLocaleString(); }
+        function _esc(s) {
+            return String(s == null ? '' : s).replace(/[&<>"']/g,
+                c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        }
+
+        async function initLocationMetrics() {
+            if (_locInit) return;
+            _locInit = true;
+            try {
+                const res = await fetch('/api/location-metrics');
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+                const sel = document.getElementById('locShopSelect');
+                sel.innerHTML = '<option value="all">— Select a location —</option>' +
+                    (data.shops || []).map(s => `<option value="${_esc(s)}">${_esc(s)}</option>`).join('');
+            } catch (e) {
+                document.getElementById('locStatus').textContent = '❌ Could not load locations: ' + e.message;
+            }
+        }
+
+        async function onLocShopChange() {
+            const shop = document.getElementById('locShopSelect').value;
+            const monthSel = document.getElementById('locMonthSelect');
+            if (!shop || shop === 'all') {
+                monthSel.innerHTML = '';
+                document.getElementById('locContent').style.display = 'none';
+                document.getElementById('locStatus').textContent = 'Select a location to begin.';
+                return;
+            }
+            document.getElementById('locStatus').textContent = '⏳ Loading months…';
+            try {
+                const res = await fetch('/api/location-metrics?shop=' + encodeURIComponent(shop));
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+                monthSel.innerHTML = (data.months || [])
+                    .map(m => `<option value="${_esc(m.value)}">${_esc(m.label)}</option>`).join('');
+                await loadLocationMetrics();
+            } catch (e) {
+                document.getElementById('locStatus').textContent = '❌ ' + e.message;
+            }
+        }
+
+        async function loadLocationMetrics() {
+            const shop = document.getElementById('locShopSelect').value;
+            const month = document.getElementById('locMonthSelect').value;
+            if (!shop || shop === 'all' || !month) return;
+            const scope = document.querySelector('input[name="locScope"]:checked').value;
+
+            const status = document.getElementById('locStatus');
+            const content = document.getElementById('locContent');
+            status.textContent = '⏳ Calculating…';
+            content.style.display = 'none';
+
+            try {
+                const qs = `shop=${encodeURIComponent(shop)}&month=${encodeURIComponent(month)}&scope=${scope}`;
+                const res = await fetch('/api/location-metrics?' + qs);
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+                if (!data.metrics) {
+                    status.textContent = `No data for ${shop} in that month.`;
+                    return;
+                }
+                renderLocationMetrics(data.metrics);
+                status.textContent = '';
+                content.style.display = 'block';
+            } catch (e) {
+                status.textContent = '❌ ' + e.message;
+            }
+        }
+
+        function renderLocationMetrics(m) {
+            const s = m.spend;
+
+            document.getElementById('locSpendTiles').innerHTML = [
+                ['Total Transactions', _num(s.totalTransactions)],
+                ['Unique Customers', _num(s.uniqueCustomers)],
+                ['Total Revenue', _ksh(s.totalRevenue)],
+                ['Avg Spend / Transaction', _ksh(s.avgPerTransaction)],
+                ['Max Single Transaction', _ksh(s.maxTransaction)],
+                ['Avg Spend / Customer', _ksh(s.avgPerCustomer)],
+                ['Median Spend / Customer', _ksh(s.medianPerCustomer)],
+                ['Highest Customer Spend', _ksh(s.highestCustomerSpend)],
+            ].map(([label, val]) => `
+                <div class="overview-card">
+                    <div class="metric-label">${label}</div>
+                    <div class="metric-value" style="font-size:1.35rem;">${val}</div>
+                </div>`).join('');
+
+            // Retention
+            const t = m.retention;
+            const scopeNote = t.scope === 'shop'
+                ? "based on this shop's own history"
+                : 'based on first-ever visit at any shop';
+            document.getElementById('locRetentionBody').innerHTML = `
+                <tr style="background:#f1f5f9;"><td colspan="3"><strong>Customer base</strong> <span style="color:#64748b; font-weight:normal;">(${scopeNote})</span></td></tr>
+                <tr><td>Total Unique Customers</td><td>${_num(t.totalCustomers)}</td><td>100%</td></tr>
+                <tr><td>Returning Customers</td><td>${_num(t.returningCustomers)}</td><td>${t.returningPct}%</td></tr>
+                <tr><td>New Customers</td><td>${_num(t.newCustomers)}</td><td>${t.newPct}%</td></tr>
+                <tr style="background:#f1f5f9;"><td colspan="3"><strong>${_esc(m.monthLabel)} behaviour</strong></td></tr>
+                <tr><td>Repeat Visitors (2+ days)</td><td>${_num(t.repeatVisitors)}</td><td>${t.repeatVisitorsPct}%</td></tr>
+                <tr><td>One-Time Visitors (1 day)</td><td>${_num(t.oneTimeVisitors)}</td><td>${t.oneTimeVisitorsPct}%</td></tr>
+                <tr style="background:#f1f5f9;"><td colspan="3"><strong>Revenue split</strong></td></tr>
+                <tr><td>Revenue from Returning Customers</td><td>${_ksh(t.revenueReturning)}</td><td>${t.revenueReturningPct}% of total</td></tr>
+                <tr><td>Revenue from New Customers</td><td>${_ksh(t.revenueNew)}</td><td>${t.revenueNewPct}% of total</td></tr>
+                <tr><td>Revenue from Repeat Visitors</td><td>${_ksh(t.revenueRepeatVisitors)}</td><td>${t.revenueRepeatVisitorsPct}% of total</td></tr>
+                <tr><td>Revenue from One-Time Visitors</td><td>${_ksh(t.revenueOneTime)}</td><td>${t.revenueOneTimePct}% of total</td></tr>`;
+
+            document.getElementById('locFreqBody').innerHTML = (t.visitFrequency || [])
+                .map(f => `<tr><td>${f.days} day${f.days === 1 ? '' : 's'}</td><td>${_num(f.customers)}</td><td>${f.pct}%</td></tr>`)
+                .join('') || '<tr><td colspan="3">No data</td></tr>';
+
+            // Fast movers
+            document.getElementById('locFastBody').innerHTML = (m.fastMovers || [])
+                .map(f => `<tr><td>${f.rank}</td><td>${_esc(f.product)}</td><td>${_num(f.units)}</td><td>${f.pctOfTopUnits}%</td><td>${f.pctOfUnits}%</td></tr>`)
+                .join('') || '<tr><td colspan="5">No product data</td></tr>';
+
+            // Daily trend matrix
+            const dt = m.dailyTrend || { days: [], series: [] };
+            document.getElementById('locTrendHead').innerHTML =
+                '<th>Day</th>' + dt.series.map(x => `<th>${_esc(x.product)}</th>`).join('');
+            document.getElementById('locTrendBody').innerHTML = dt.days.map((d, i) =>
+                `<tr><td><strong>${d}</strong></td>` +
+                dt.series.map(x => {
+                    const v = x.data[i] || 0;
+                    return `<td style="${v ? '' : 'color:#cbd5e1;'}">${v}</td>`;
+                }).join('') + '</tr>').join('') || '<tr><td>No data</td></tr>';
+
+            // Best customers
+            document.getElementById('locBestBody').innerHTML = (m.bestCustomers || [])
+                .map(b => `<tr>
+                    <td>${b.rank}</td><td>${_esc(b.name)}</td><td>${_esc(b.phone)}</td>
+                    <td>${_esc(b.gender)}</td><td>${_ksh(b.totalSpend)}</td>
+                    <td>${b.transactions}</td><td>${b.visitDays}</td>
+                    <td>${_ksh(b.avgPerTransaction)}</td><td>${_esc(b.lastVisit)}</td>
+                    <td style="max-width:320px; font-size:12px;">${_esc((b.products || []).join(', '))}</td>
+                </tr>`).join('') || '<tr><td colspan="10">No data</td></tr>';
+
+            // Spend by product
+            document.getElementById('locProductBody').innerHTML = (m.byProduct || [])
+                .map(p => `<tr>
+                    <td>${_esc(p.product)}</td><td>${_num(p.units)}</td><td>${_num(p.transactions)}</td>
+                    <td>${_num(p.revenue)}</td><td>${_num(p.avgPerTransaction)}</td>
+                </tr>`).join('') || '<tr><td colspan="5">No product data</td></tr>';
         }
 
         function populateShopBreakdown(containerId, analysis, chartId) {
@@ -2816,6 +3062,9 @@
                 const titleEl = document.getElementById('currentTabTitle');
                 if (titleEl) titleEl.textContent = btn.dataset.label || tab;
             }
+            // Location metrics loads on demand -- it is a per-shop, per-month
+            // query, so there is no point computing it until the tab is opened.
+            if (tab === 'shops') { initLocationMetrics(); }
         }
 
         function filterToShop(shopName) {
