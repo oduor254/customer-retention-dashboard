@@ -534,9 +534,15 @@
                                 <span style="font-weight:bold; color:#1e293b;">🗓️ Month:</span>
                                 <select id="locMonthSelect" class="filter-select" onchange="loadLocationMetrics()"></select>
 
-                                <span style="font-weight:bold; color:#1e293b;">🔍 New vs returning based on:</span>
-                                <label style="cursor:pointer;"><input type="radio" name="locScope" value="shop" checked onchange="loadLocationMetrics()" style="margin-right:5px;"> This shop's history</label>
-                                <label style="cursor:pointer;"><input type="radio" name="locScope" value="all" onchange="loadLocationMetrics()" style="margin-right:5px;"> Any shop (first-ever visit)</label>
+                                <span style="font-weight:bold; color:#1e293b;">🔍 Filter View:</span>
+                                <label style="cursor:pointer;"><input type="radio" name="locScope" value="shop" checked onchange="loadLocationMetrics()" style="margin-right:5px;"> Internal History</label>
+                                <label style="cursor:pointer;"><input type="radio" name="locScope" value="all" onchange="loadLocationMetrics()" style="margin-right:5px;"> Cross Shop</label>
+                            </div>
+
+                            <div class="action-bar" style="margin-bottom:16px;">
+                                <span class="bar-label">📊 Export metrics to Excel</span>
+                                <button onclick="exportLocationMetrics('one')" id="locExportOneBtn" class="export-btn" style="background:linear-gradient(135deg,#27ae60,#2ecc71);">⬇️ Export This Location</button>
+                                <button onclick="exportLocationMetrics('all')" id="locExportAllBtn" class="export-btn" style="background:linear-gradient(135deg,#6366f1,#4f46e5);">⬇️ Export All Locations</button>
                             </div>
 
                             <div id="locStatus" style="color:#64748b; font-size:14px; padding:10px 0;">Select a location to begin.</div>
@@ -569,7 +575,7 @@
                                     <table id="locFastTable">
                                         <thead><tr>
                                             <th>Rank</th><th>Product</th><th>Units Sold</th>
-                                            <th>% of Top 10</th><th>% of All Units</th>
+                                            <th>% of All Units Sold</th>
                                         </tr></thead>
                                         <tbody id="locFastBody"></tbody>
                                     </table>
@@ -1706,6 +1712,38 @@
             }
         }
 
+        function exportLocationMetrics(which) {
+            const month = document.getElementById('locMonthSelect').value;
+            const shop  = document.getElementById('locShopSelect').value;
+            const scope = document.querySelector('input[name="locScope"]:checked').value;
+            const status = document.getElementById('locStatus');
+
+            if (!month) { status.textContent = 'Pick a location and month first.'; return; }
+            if (which === 'one' && (!shop || shop === 'all')) {
+                status.textContent = 'Pick a location first, or use Export All Locations.';
+                return;
+            }
+
+            const btn = document.getElementById(which === 'one' ? 'locExportOneBtn' : 'locExportAllBtn');
+            const label = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = '⏳ Building…';
+            status.textContent = which === 'all'
+                ? 'Building a workbook for every location — this can take a minute…'
+                : 'Building workbook…';
+
+            const qs = `shop=${encodeURIComponent(which === 'one' ? shop : 'all')}`
+                     + `&month=${encodeURIComponent(month)}&scope=${scope}`;
+            // Navigating to the URL lets the browser handle the file download.
+            window.location = '/api/export/location-metrics?' + qs;
+
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.textContent = label;
+                status.textContent = '';
+            }, 2500);
+        }
+
         function renderLocationMetrics(m) {
             const s = m.spend;
 
@@ -1749,8 +1787,8 @@
 
             // Fast movers
             document.getElementById('locFastBody').innerHTML = (m.fastMovers || [])
-                .map(f => `<tr><td>${f.rank}</td><td>${_esc(f.product)}</td><td>${_num(f.units)}</td><td>${f.pctOfTopUnits}%</td><td>${f.pctOfUnits}%</td></tr>`)
-                .join('') || '<tr><td colspan="5">No product data</td></tr>';
+                .map(f => `<tr><td>${f.rank}</td><td>${_esc(f.product)}</td><td>${_num(f.units)}</td><td>${f.pctOfUnits}%</td></tr>`)
+                .join('') || '<tr><td colspan="4">No product data</td></tr>';
 
             // Daily trend matrix
             const dt = m.dailyTrend || { days: [], series: [] };

@@ -2935,6 +2935,218 @@ def location_metrics():
         return jsonify({'error': str(e)}), 500
 
 
+
+
+# ── Excel export of location metrics ─────────────────────────────────────────
+
+_XL_HEAD = None  # lazily built styles, so openpyxl is only imported on demand
+
+
+def _xl_styles():
+    from openpyxl.styles import Font, PatternFill, Alignment
+    return {
+        'title': Font(bold=True, size=13, color='FFFFFF'),
+        'title_fill': PatternFill('solid', fgColor='4F46E5'),
+        'head': Font(bold=True, color='FFFFFF'),
+        'head_fill': PatternFill('solid', fgColor='334155'),
+        'sect': Font(bold=True, color='0F172A'),
+        'sect_fill': PatternFill('solid', fgColor='E2E8F0'),
+        'center': Alignment(horizontal='center'),
+    }
+
+
+def _xl_write(ws, rows, st, widths=None):
+    """Write [(kind, cells)] rows where kind is title|head|sect|data."""
+    for cells in rows:
+        kind, values = cells[0], cells[1]
+        r = ws.max_row + 1 if ws.max_row > 1 or ws['A1'].value is not None else 1
+        for i, v in enumerate(values, start=1):
+            c = ws.cell(row=r, column=i, value=v)
+            if kind == 'title':
+                c.font, c.fill = st['title'], st['title_fill']
+            elif kind == 'head':
+                c.font, c.fill = st['head'], st['head_fill']
+            elif kind == 'sect':
+                c.font, c.fill = st['sect'], st['sect_fill']
+    if widths:
+        from openpyxl.utils import get_column_letter
+        for i, w in enumerate(widths, start=1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+
+
+def _sheet_for_location(wb, m, first=False):
+    """Write one location's four metric groups, mirroring the source workbook."""
+    st = _xl_styles()
+    tag = f"{m['shop']} {m['month']}"
+    s, t = m['spend'], m['retention']
+    scope_note = ("this shop's own history" if t['scope'] == 'shop'
+                  else 'first visit at any shop')
+
+    ws = wb.active if first else wb.create_sheet()
+    ws.title = (f"{m['shop']} - Spend")[:31]
+    _xl_write(ws, [
+        ('title', [f"{tag} | Spend Metrics"]),
+        ('sect', ['OVERALL SUMMARY']),
+        ('data', ['Total Transactions', s['totalTransactions']]),
+        ('data', ['Unique Customers', s['uniqueCustomers']]),
+        ('data', ['Total Revenue (Ksh)', s['totalRevenue']]),
+        ('sect', ['AVG SPEND / TRANSACTION']),
+        ('data', ['Avg Spend per Transaction', s['avgPerTransaction']]),
+        ('data', ['Min Spend (single txn)', s['minTransaction']]),
+        ('data', ['Max Spend (single txn)', s['maxTransaction']]),
+        ('sect', ['AVG SPEND / CUSTOMER']),
+        ('data', ['Avg Spend per Customer', s['avgPerCustomer']]),
+        ('data', ['Median Spend per Customer', s['medianPerCustomer']]),
+        ('data', ['Highest Customer Spend', s['highestCustomerSpend']]),
+        ('data', ['Lowest Customer Spend', s['lowestCustomerSpend']]),
+        ('data', []),
+        ('sect', ['AVG SPEND PER TRANSACTION BY PRODUCT']),
+        ('head', ['Product', 'Units Sold', 'Transactions', 'Revenue (Ksh)',
+                  'Avg / Transaction (Ksh)']),
+    ], st, widths=[34, 14, 14, 18, 22])
+    for p in m['byProduct']:
+        _xl_write(ws, [('data', [p['product'], p['units'], p['transactions'],
+                                 p['revenue'], p['avgPerTransaction']])], st)
+
+    ws = wb.create_sheet((f"{m['shop']} - Fast Moving")[:31])
+    _xl_write(ws, [
+        ('title', [f"{tag} | Top 10 Fast Moving Products"]),
+        ('head', ['Rank', 'Product', 'Units Sold', '% of All Units Sold']),
+    ], st, widths=[8, 30, 14, 22])
+    for f in m['fastMovers']:
+        _xl_write(ws, [('data', [f['rank'], f['product'], f['units'],
+                                 f['pctOfUnits'] / 100])], st)
+    for r in range(3, 3 + len(m['fastMovers'])):
+        ws.cell(row=r, column=4).number_format = '0.0%'
+
+    dt = m['dailyTrend']
+    if dt['series']:
+        _xl_write(ws, [('data', []),
+                       ('sect', [f"DAILY SALES TREND - TOP 10 ({m['monthLabel']})"]),
+                       ('head', ['Day'] + [x['product'] for x in dt['series']])], st)
+        for i, d in enumerate(dt['days']):
+            _xl_write(ws, [('data', [d] + [x['data'][i] for x in dt['series']])], st)
+
+    ws = wb.create_sheet((f"{m['shop']} - Best Custs")[:31])
+    _xl_write(ws, [
+        ('title', [f"{tag} | Best Customer Tracker"]),
+        ('head', ['Rank', 'Name', 'Phone', 'Gender', 'Total Spend (Ksh)',
+                  'Transactions', 'Visit Days', 'Avg/Transaction (Ksh)',
+                  'Last Visit', 'Products Bought']),
+    ], st, widths=[7, 18, 15, 10, 18, 14, 12, 22, 14, 60])
+    for b in m['bestCustomers']:
+        _xl_write(ws, [('data', [b['rank'], b['name'], b['phone'], b['gender'],
+                                 b['totalSpend'], b['transactions'], b['visitDays'],
+                                 b['avgPerTransaction'], b['lastVisit'],
+                                 ', '.join(b['products'])])], st)
+
+    ws = wb.create_sheet((f"{m['shop']} - Retention")[:31])
+    _xl_write(ws, [
+        ('title', [f"{tag} | Repeat Customers & Retention"]),
+        ('head', ['Metric', 'Value', '% / Note']),
+        ('sect', [f'CUSTOMER BASE (based on {scope_note})']),
+        ('data', ['Total Unique Customers', t['totalCustomers'], '100%']),
+        ('data', ['Returning Customers', t['returningCustomers'], f"{t['returningPct']}%"]),
+        ('data', ['New Customers', t['newCustomers'], f"{t['newPct']}%"]),
+        ('sect', [f"{m['monthLabel'].upper()} BEHAVIOUR"]),
+        ('data', ['Repeat Visitors (2+ days)', t['repeatVisitors'], f"{t['repeatVisitorsPct']}%"]),
+        ('data', ['One-Time Visitors (1 day)', t['oneTimeVisitors'], f"{t['oneTimeVisitorsPct']}%"]),
+        ('sect', ['REVENUE SPLIT']),
+        ('data', ['Revenue from Returning Custs', t['revenueReturning'], f"{t['revenueReturningPct']}% of total"]),
+        ('data', ['Revenue from New Customers', t['revenueNew'], f"{t['revenueNewPct']}% of total"]),
+        ('data', ['Revenue from Repeat Visitors', t['revenueRepeatVisitors'], f"{t['revenueRepeatVisitorsPct']}% of total"]),
+        ('data', ['Revenue from One-Time Visitors', t['revenueOneTime'], f"{t['revenueOneTimePct']}% of total"]),
+        ('data', []),
+        ('sect', ['VISIT FREQUENCY DISTRIBUTION']),
+        ('head', ['Visit Days in Month', 'Customers', '% of Customers']),
+    ], st, widths=[34, 18, 20])
+    for f in t['visitFrequency']:
+        _xl_write(ws, [('data', [f"{f['days']} day{'' if f['days'] == 1 else 's'}",
+                                 f['customers'], f"{f['pct']}%"])], st)
+
+
+@app.route('/api/export/location-metrics')
+def export_location_metrics():
+    """Excel export: one location, or every location, for a month.
+
+    Mirrors the layout of the source metrics workbook so the output can be
+    dropped straight in beside the hand-built reports it replaces.
+    """
+    from flask import send_file
+    from openpyxl import Workbook
+
+    shop  = request.args.get('shop', 'all')
+    month = request.args.get('month')
+    scope = request.args.get('scope', 'shop')
+    scope = scope if scope in ('shop', 'all') else 'shop'
+
+    try:
+        df = get_customer_data()
+        months = _location_month_options(df, None if shop == 'all' else shop)
+        if not month or month == 'all':
+            month = months[0]['value'] if months else None
+        if not month:
+            return jsonify({'error': 'No data available to export'}), 400
+
+        wb = Workbook()
+
+        if shop and shop != 'all':
+            m = _calculate_location_metrics(df, shop, month, scope=scope)
+            if not m:
+                return jsonify({'error': f'No data for {shop} in {month}'}), 400
+            _sheet_for_location(wb, m, first=True)
+            fname = f"{shop}_{month}_metrics.xlsx".replace(' ', '_')
+        else:
+            # All locations: a comparison sheet first, then each shop's detail.
+            shops = sorted(s for s in df['Shop'].dropna().astype(str).str.strip().unique() if s)
+            computed = []
+            for sname in shops:
+                m = _calculate_location_metrics(df, sname, month, scope=scope)
+                if m:
+                    computed.append(m)
+            if not computed:
+                return jsonify({'error': f'No data for any location in {month}'}), 400
+
+            st = _xl_styles()
+            ws = wb.active
+            ws.title = 'All Locations'
+            _xl_write(ws, [
+                ('title', [f"All Locations | {computed[0]['monthLabel']}"]),
+                ('head', ['Location', 'Transactions', 'Unique Customers',
+                          'Revenue (Ksh)', 'Avg/Transaction', 'Avg/Customer',
+                          'Returning', 'Returning %', 'New', 'New %',
+                          'Repeat Visitors', 'Repeat %', 'One-Time', 'One-Time %',
+                          'Top Product']),
+            ], st, widths=[18, 14, 18, 18, 16, 16, 12, 12, 10, 10, 16, 12, 12, 12, 24])
+            for m in sorted(computed, key=lambda x: -x['spend']['totalRevenue']):
+                s, t = m['spend'], m['retention']
+                _xl_write(ws, [('data', [
+                    m['shop'], s['totalTransactions'], s['uniqueCustomers'],
+                    s['totalRevenue'], s['avgPerTransaction'], s['avgPerCustomer'],
+                    t['returningCustomers'], f"{t['returningPct']}%",
+                    t['newCustomers'], f"{t['newPct']}%",
+                    t['repeatVisitors'], f"{t['repeatVisitorsPct']}%",
+                    t['oneTimeVisitors'], f"{t['oneTimeVisitorsPct']}%",
+                    m['fastMovers'][0]['product'] if m['fastMovers'] else '',
+                ])], st)
+            ws.freeze_panes = 'A3'
+
+            for m in computed:
+                _sheet_for_location(wb, m)
+            fname = f"all_locations_{month}_metrics.xlsx"
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return send_file(
+            buf, as_attachment=True, download_name=fname,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except Exception as e:
+        import traceback
+        print(f"[ERROR] /api/export/location-metrics: {traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5002))
     app.run(host="0.0.0.0", port=port)
